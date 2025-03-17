@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/krrrr38/gitlab-2-github/pkg/config"
 	"github.com/krrrr38/gitlab-2-github/pkg/github"
@@ -28,6 +29,7 @@ func NewMigrateCommand(cfg *config.Config) *cobra.Command {
 	cmd.Flags().BoolVar(&cfg.IncludePRs, "include-prs", true, "Migrate merge requests to pull requests")
 	cmd.Flags().IntSliceVar(&cfg.FilterMergeReqIDs, "mr-ids", nil, "Filter specific merge request IDs to migrate")
 	cmd.Flags().IntVar(&cfg.ContinueFromMRID, "continue-from", 0, "Continue migration from the specified MR ID")
+	cmd.Flags().BoolVar(&cfg.ForceRecreate, "force-recreate", false, "Force delete and recreate the GitHub repository before migration")
 
 	return cmd
 }
@@ -91,21 +93,42 @@ func runMigration(cfg config.Config) error {
 
 	githubClient := github.NewClient(cfg.GitHubToken)
 
-	// リポジトリ設定を取得してミラーリングが必要かどうかを判断
-	// GitHubリポジトリが存在し、少なくとも1つのコミットがあれば既にミラーリング済みと見なす
-	repoExists, err := checkGitHubRepoExists(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
-	if err != nil {
-		logger.Warn("Failed to check GitHub repository status", "error", err)
-	}
-
-	if !repoExists {
-		// 1. リポジトリをミラーリング
-		logger.Info("Mirroring repository...")
+	// Check if force recreation is requested
+	if cfg.ForceRecreate {
+		logger.Info("Force recreation requested, deleting GitHub repository if it exists...")
+		
+		// Try to delete the repository
+		err := github.DeleteRepository(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
+		if err != nil {
+			// Non-existing repository will return an error, but we can ignore it as we'll create it anyway
+			logger.Info("Failed to delete repository, it might not exist yet", "error", err)
+		}
+		
+		// Add a small delay to ensure the deletion is processed
+		time.Sleep(2 * time.Second)
+		
+		// リポジトリをミラーリング（削除後なので存在しないはず）
+		logger.Info("Mirroring repository to newly created target...")
 		if err := migration.MirrorRepository(cfg); err != nil {
 			return fmt.Errorf("failed to mirror repository: %w", err)
 		}
 	} else {
-		logger.Info("Repository already exists on GitHub, skipping mirroring...")
+		// リポジトリ設定を取得してミラーリングが必要かどうかを判断
+		// GitHubリポジトリが存在し、少なくとも1つのコミットがあれば既にミラーリング済みと見なす
+		repoExists, err := checkGitHubRepoExists(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
+		if err != nil {
+			logger.Warn("Failed to check GitHub repository status", "error", err)
+		}
+
+		if !repoExists {
+			// 1. リポジトリをミラーリング
+			logger.Info("Mirroring repository...")
+			if err := migration.MirrorRepository(cfg); err != nil {
+				return fmt.Errorf("failed to mirror repository: %w", err)
+			}
+		} else {
+			logger.Info("Repository already exists on GitHub, skipping mirroring...")
+		}
 	}
 
 	// 2. マージリクエストの移行（リクエストされている場合）

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v60/github"
+	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 	"golang.org/x/oauth2"
 )
 
@@ -35,6 +36,59 @@ func NewClient(token string) *Client {
 // GetInner returns the underlying GitHub client
 func (c *Client) GetInner() *github.Client {
 	return c.inner
+}
+
+// DeleteRepository deletes a GitHub repository
+func DeleteRepository(ctx context.Context, client *Client, owner, repo string) error {
+	logger.Info("Deleting GitHub repository", "owner", owner, "repo", repo)
+	
+	err := RetryableOperation(ctx, func() error {
+		_, err := client.GetInner().Repositories.Delete(ctx, owner, repo)
+		return err
+	})
+
+	if err != nil {
+		logger.Error("Failed to delete GitHub repository", "owner", owner, "repo", repo, "error", err)
+		return fmt.Errorf("failed to delete GitHub repository: %w", err)
+	}
+
+	logger.Info("Successfully deleted GitHub repository", "owner", owner, "repo", repo)
+	return nil
+}
+
+// CreateRepository creates an empty GitHub repository
+func CreateRepository(ctx context.Context, client *Client, owner, repo string, private bool) error {
+	logger.Info("Creating GitHub repository", "owner", owner, "repo", repo, "private", private)
+	
+	newRepo := &github.Repository{
+		Name:     github.String(repo),
+		Private:  github.Bool(private),
+		HasIssues: github.Bool(true),
+		HasWiki:  github.Bool(true),
+		AutoInit: github.Bool(false), // Don't initialize with README
+	}
+
+	err := RetryableOperation(ctx, func() error {
+		// Check if we're creating in an organization or user account
+		var _, _, err error
+		_, _, err = client.GetInner().Organizations.Get(ctx, owner)
+		if err == nil {
+			// This is an organization
+			_, _, err = client.GetInner().Repositories.Create(ctx, owner, newRepo)
+		} else {
+			// This is a user account
+			_, _, err = client.GetInner().Repositories.Create(ctx, "", newRepo)
+		}
+		return err
+	})
+
+	if err != nil {
+		logger.Error("Failed to create GitHub repository", "owner", owner, "repo", repo, "error", err)
+		return fmt.Errorf("failed to create GitHub repository: %w", err)
+	}
+
+	logger.Info("Successfully created GitHub repository", "owner", owner, "repo", repo)
+	return nil
 }
 
 // RetryableOperation retries a GitHub API operation with exponential backoff
