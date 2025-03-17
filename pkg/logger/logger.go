@@ -112,7 +112,14 @@ func logEvent(event *zerolog.Event, msg string, keysAndValues ...interface{}) {
 			if !ok {
 				key = fmt.Sprintf("%v", keysAndValues[i])
 			}
-			event = event.Interface(key, keysAndValues[i+1])
+
+			// Handle error type specially to ensure proper formatting
+			if err, ok := keysAndValues[i+1].(error); ok {
+				event = event.AnErr(key, err)
+			} else {
+				// For other types, use Interface method
+				event = event.Interface(key, keysAndValues[i+1])
+			}
 		} else {
 			// Odd number of arguments, add the last one as an orphaned value
 			event = event.Interface("orphaned", keysAndValues[i])

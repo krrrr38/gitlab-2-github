@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	githublib "github.com/google/go-github/v60/github"
@@ -52,7 +53,7 @@ func MigrateMergeRequests(ctx context.Context, gitlabClient *gitlablib.Client, g
 		// 既に GitHub 側でプルリクエストが存在するか確認
 		// PR タイトルのパターン等から判断することも可能
 		// ここでは簡単のため mr.IID を含むブランチ名があるかどうかで判断
-		sourceBranchName := fmt.Sprintf("gitlab-mr-%d", mr.IID)
+		sourceBranchName := fmt.Sprintf("gitlab-mr-%d-source", mr.IID)
 		alreadyMigrated, err := checkPRExistsInGitHub(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo, sourceBranchName)
 		if err != nil {
 			logger.Warn("Failed to check if PR exists", "error", err)
@@ -165,23 +166,121 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 		return 0, fmt.Errorf("failed to clone GitHub repository: %w", err)
 	}
 
-	// 0. Recreate target branch if needed (from the correct commit)
-	targetBranch := mr.TargetBranch
+	// 0. Prepare unique branch names for both source and target
+	sourceBranch := fmt.Sprintf("gitlab-mr-%d-source", mr.IID)
+	targetBranch := fmt.Sprintf("gitlab-mr-%d-target", mr.IID)
 
-	// 1. Create source branch based on the MR source commit
-	sourceBranch := fmt.Sprintf("gitlab-mr-%d", mr.IID)
+	logger.Info("Creating unique branches for migration", "mr", mr.IID, "source", sourceBranch, "target", targetBranch)
 
-	// Get the correct commit SHA for the source branch
+	// Get the target branch commit SHA from GitLab
+	targetCommit, _, err := gitlabClient.Commits.GetCommit(cfg.GitLabProjectID, fmt.Sprintf("%s", mr.TargetBranch))
+	if err != nil {
+		logger.Warn("Failed to get target commit SHA, will use latest on default branch", "branch", mr.TargetBranch, "error", err)
+
+		// Checkout current HEAD as the base for target branch
+		checkoutCmd := fmt.Sprintf("cd %s && git checkout -b %s origin/HEAD", mrDir, targetBranch)
+		if err := git.ExecuteCommand(checkoutCmd); err != nil {
+			return 0, fmt.Errorf("failed to create target branch: %w", err)
+		}
+	} else {
+		// Checkout target branch at the specific commit from the MR
+		// First, ensure we have the commit by fetching (may need GitLab access)
+		// For now, we'll try with what's in the GitHub repo
+		logger.Info("Creating target branch at commit", "branch", targetBranch, "commit", targetCommit.ID)
+
+		// Try to find the commit or a close ancestral match
+		checkoutCmd := fmt.Sprintf("cd %s && (git checkout -b %s %s || git checkout -b %s origin/HEAD)",
+			mrDir, targetBranch, targetCommit.ID, targetBranch)
+		if err := git.ExecuteCommand(checkoutCmd); err != nil {
+			return 0, fmt.Errorf("failed to create target branch: %w", err)
+		}
+	}
+
+	// Push the target branch to GitHub
+	pushTargetCmd := fmt.Sprintf("cd %s && git push origin %s", mrDir, targetBranch)
+	if err := git.ExecuteCommand(pushTargetCmd); err != nil {
+		return 0, fmt.Errorf("failed to push target branch: %w", err)
+	}
+
+	// Get the source branch commit SHA from GitLab
 	sourceCommit, _, err := gitlabClient.Commits.GetCommit(cfg.GitLabProjectID, mr.SHA)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get source commit: %w", err)
 	}
 
-	// Create source branch from this commit
-	createSourceCmd := fmt.Sprintf("cd %s && git checkout -b %s %s",
-		mrDir, sourceBranch, sourceCommit.ID)
+	// Try to create a source branch from the MR SHA
+	logger.Info("Creating source branch at commit", "branch", sourceBranch, "commit", sourceCommit.ID)
+	createSourceCmd := fmt.Sprintf("cd %s && (git checkout -b %s %s || (git checkout -b %s %s && git commit --allow-empty -m 'Recreate source branch for GitLab MR %d'))",
+		mrDir, sourceBranch, sourceCommit.ID, sourceBranch, targetBranch, mr.IID)
 	if err := git.ExecuteCommand(createSourceCmd); err != nil {
 		return 0, fmt.Errorf("failed to create source branch: %w", err)
+	}
+
+	// Add a special file with the merge request info to ensure we have a diff
+
+	// Get diffs from GitLab
+	logger.Debug("Getting MR changes from GitLab",
+		"projectID", cfg.GitLabProjectID,
+		"mrID", mr.IID)
+
+	changes, _, err := gitlabClient.MergeRequests.GetMergeRequestChanges(cfg.GitLabProjectID, mr.IID, nil)
+	if err != nil {
+		logger.Warn("Failed to get MR changes, will use empty commit",
+			"projectID", cfg.GitLabProjectID,
+			"mrID", mr.IID,
+			"error", err)
+	} else {
+		// Create a patch metadata file
+		metadata := fmt.Sprintf("# GitLab MR %d Patch\n\n", mr.IID)
+		metadata += fmt.Sprintf("Source: %s\n", mr.SourceBranch)
+		metadata += fmt.Sprintf("Target: %s\n", mr.TargetBranch)
+		metadata += fmt.Sprintf("Author: %s\n", mr.Author.Username)
+		metadata += fmt.Sprintf("Created: %s\n\n", mr.CreatedAt.Format(time.RFC3339))
+
+		// Apply changes to recreate the diff
+		for _, change := range changes.Changes {
+			// Ensure directory exists
+			// dirPath not needed, just use the commands directly
+			dirCmd := fmt.Sprintf("cd %s && mkdir -p $(dirname %s)", mrDir, change.NewPath)
+			_ = git.ExecuteCommand(dirCmd) // Ignore error if directory already exists
+
+			// Write the file with the new content
+			writeCmd := fmt.Sprintf("cd %s && cat > '%s' << 'EOFMARKER'\n%s\nEOFMARKER",
+				mrDir, change.NewPath, change.Diff)
+			_ = git.ExecuteCommand(writeCmd)
+		}
+	}
+
+	// Create a commit
+	// First add all changes
+	addCmd := fmt.Sprintf("cd %s && git add .", mrDir)
+	if err := git.ExecuteCommand(addCmd); err != nil {
+		return 0, fmt.Errorf("failed to add changes: %w", err)
+	}
+
+	// Check if there are any changes to commit
+	checkChangesCmd := fmt.Sprintf("cd %s && git diff --staged --quiet || echo 'has_changes'", mrDir)
+	hasChangesResult, err := git.ExecuteCommandWithOutput(checkChangesCmd)
+	hasChanges := strings.Contains(hasChangesResult, "has_changes")
+
+	// Only commit if there are changes or we need an empty commit
+	if hasChanges {
+		commitCmd := fmt.Sprintf("cd %s && git commit -m 'Recreate changes from GitLab MR %d'", mrDir, mr.IID)
+		if err := git.ExecuteCommand(commitCmd); err != nil {
+			return 0, fmt.Errorf("failed to commit changes: %w", err)
+		}
+	} else {
+		// Create an empty commit if we have no changes
+		emptyCommitCmd := fmt.Sprintf("cd %s && git commit --allow-empty -m 'GitLab MR %d (no changes detected)'", mrDir, mr.IID)
+		if err := git.ExecuteCommand(emptyCommitCmd); err != nil {
+			return 0, fmt.Errorf("failed to create empty commit: %w", err)
+		}
+	}
+
+	// Push the source branch to GitHub
+	pushSourceCmd := fmt.Sprintf("cd %s && git push origin %s --force", mrDir, sourceBranch)
+	if err := git.ExecuteCommand(pushSourceCmd); err != nil {
+		return 0, fmt.Errorf("failed to push source branch: %w", err)
 	}
 
 	// 2. Create GitHub PR
@@ -239,12 +338,6 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 
 	body = utils.TruncateText(body, utils.MaxPRDescriptionLength)
 
-	// Push the branch to GitHub
-	pushCmd := fmt.Sprintf("cd %s && git push origin %s", mrDir, sourceBranch)
-	if err := git.ExecuteCommand(pushCmd); err != nil {
-		return 0, fmt.Errorf("failed to push source branch: %w", err)
-	}
-
 	// Create the PR
 	var pr *githublib.PullRequest
 	err = github.RetryableOperation(ctx, func() error {
@@ -261,7 +354,61 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	})
 
 	if err != nil {
-		return 0, fmt.Errorf("failed to create GitHub PR: %w", err)
+		// Special handling for no diff error
+		if noDiffErr, ok := err.(*github.NoDiffError); ok {
+			logger.Info("No difference found between branches, adding dummy commit to source branch", "source", noDiffErr.Head, "target", noDiffErr.Base)
+
+			// Create a dummy file to ensure there's a diff
+			// Create the filepath directly in the command below
+			dummyContent := fmt.Sprintf("GitLab MR: %d\nTitle: %s\nAuthor: %s\nCreated: %s\nState: %s\n",
+				mr.IID, mr.Title, mr.Author.Username, mr.CreatedAt.Format(time.RFC3339), mr.State)
+
+			// Write the dummy file and commit it
+			createFileCmd := fmt.Sprintf("cd %s && echo '%s' > %s",
+				mrDir,
+				dummyContent,
+				".gitlab-mr-"+fmt.Sprintf("%d", mr.IID)+"-metadata")
+			if err := git.ExecuteCommand(createFileCmd); err != nil {
+				return 0, fmt.Errorf("failed to create dummy file: %w", err)
+			}
+
+			// Add and commit the file
+			addCmd := fmt.Sprintf("cd %s && git add .", mrDir)
+			if err := git.ExecuteCommand(addCmd); err != nil {
+				return 0, fmt.Errorf("failed to add dummy file: %w", err)
+			}
+
+			commitCmd := fmt.Sprintf("cd %s && git commit -m 'Add metadata for GitLab MR %d'", mrDir, mr.IID)
+			if err := git.ExecuteCommand(commitCmd); err != nil {
+				return 0, fmt.Errorf("failed to commit dummy file: %w", err)
+			}
+
+			// Push the branch again
+			pushCmd := fmt.Sprintf("cd %s && git push origin %s --force", mrDir, sourceBranch)
+			if err := git.ExecuteCommand(pushCmd); err != nil {
+				return 0, fmt.Errorf("failed to push source branch with dummy commit: %w", err)
+			}
+
+			// Try to create the PR again
+			err = github.RetryableOperation(ctx, func() error {
+				var createErr error
+				pr, createErr = github.CreatePullRequest(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo, &github.PullRequestOptions{
+					Title:               title,
+					Body:                body,
+					Head:                sourceBranch,
+					Base:                targetBranch,
+					Draft:               mr.WorkInProgress,
+					MaintainerCanModify: true,
+				})
+				return createErr
+			})
+
+			if err != nil {
+				return 0, fmt.Errorf("failed to create GitHub PR after adding dummy commit: %w", err)
+			}
+		} else {
+			return 0, fmt.Errorf("failed to create GitHub PR: %w", err)
+		}
 	}
 
 	logger.Info("Created GitHub PR", "number", pr.GetNumber(), "url", pr.GetHTMLURL())
@@ -283,6 +430,18 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 			logger.Warn("Failed to close PR", "error", err)
 		} else {
 			logger.Info("Closed GitHub PR", "number", pr.GetNumber())
+
+			// Delete source branch
+			err = github.DeleteBranch(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo, sourceBranch)
+			if err != nil {
+				logger.Warn("Failed to delete source branch", "branch", sourceBranch, "error", err)
+			}
+
+			// Always delete the target branch since we created a unique one
+			err = github.DeleteBranch(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo, targetBranch)
+			if err != nil {
+				logger.Warn("Failed to delete temporary target branch", "branch", targetBranch, "error", err)
+			}
 		}
 	}
 

@@ -20,6 +20,18 @@ func ExecuteCommand(cmd string) error {
 	return nil
 }
 
+// ExecuteCommandWithOutput executes a shell command and returns the output
+func ExecuteCommandWithOutput(cmd string) (string, error) {
+	logger.Debug("Executing command with output", "cmd", cmd)
+
+	c := exec.Command("bash", "-c", cmd)
+	output, err := c.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("command failed: %s\nOutput: %s", err, output)
+	}
+	return string(output), nil
+}
+
 // CreateDirectory creates a directory if it doesn't exist
 func CreateDirectory(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
