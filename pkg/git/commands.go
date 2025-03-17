@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	
+
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 )
 
 // ExecuteCommand executes a shell command
 func ExecuteCommand(cmd string) error {
 	logger.Debug("Executing command", "cmd", cmd)
-	
+
 	c := exec.Command("bash", "-c", cmd)
 	output, err := c.CombinedOutput()
 	if err != nil {

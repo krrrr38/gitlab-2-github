@@ -20,17 +20,17 @@ func GetMergeRequestDiscussions(client *gitlab.Client, projectID string, mrIID i
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Map to store notes with their relationships
 	noteMap := make(map[int]*DiscussionNote)
-	
+
 	// Process all discussions and their notes
 	for _, discussion := range discussions {
 		// Skip system-generated discussions
 		if len(discussion.Notes) == 0 || discussion.Notes[0].System {
 			continue
 		}
-		
+
 		// First note in the discussion is the root note
 		firstNote := discussion.Notes[0]
 		noteMap[firstNote.ID] = &DiscussionNote{
@@ -38,11 +38,11 @@ func GetMergeRequestDiscussions(client *gitlab.Client, projectID string, mrIID i
 			ParentID:   0, // Root note has no parent
 			Discussion: discussion.ID,
 		}
-		
+
 		// Process replies (if any)
 		for i := 1; i < len(discussion.Notes); i++ {
 			note := discussion.Notes[i]
-			
+
 			// All subsequent notes in a discussion are replies to the first note
 			noteMap[note.ID] = &DiscussionNote{
 				Note:       note,
@@ -51,7 +51,7 @@ func GetMergeRequestDiscussions(client *gitlab.Client, projectID string, mrIID i
 			}
 		}
 	}
-	
+
 	logger.Info("Found discussions for MR", "count", len(discussions), "notes", len(noteMap))
 	return noteMap, nil
 }

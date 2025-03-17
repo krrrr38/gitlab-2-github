@@ -8,10 +8,10 @@ import (
 const (
 	// GitHubの各種テキスト長制限
 	// https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28
-	MaxPRTitleLength      = 256  // Pull Requestのタイトル最大長
+	MaxPRTitleLength       = 256   // Pull Requestのタイトル最大長
 	MaxPRDescriptionLength = 65536 // Pull Requestの説明文最大長（64KB）
 	MaxCommentLength       = 65536 // コメントの最大長（64KB）
-	
+
 	// 切り詰め表示用のサフィックス
 	TruncateSuffix = "... [truncated]"
 )
@@ -21,7 +21,7 @@ func TruncateText(text string, maxLength int) string {
 	if utf8.RuneCountInString(text) <= maxLength {
 		return text
 	}
-	
+
 	// 最大長からサフィックス長を引いた長さまで切り詰める
 	availableLength := maxLength - utf8.RuneCountInString(TruncateSuffix)
 	if availableLength <= 0 {
@@ -29,7 +29,7 @@ func TruncateText(text string, maxLength int) string {
 		runes := []rune(text)
 		return string(runes[:maxLength])
 	}
-	
+
 	runes := []rune(text)
 	return string(runes[:availableLength]) + TruncateSuffix
 }
@@ -40,9 +40,9 @@ func WrapComment(text string, isResolved bool, author string) string {
 	// 折りたたみが必要な場合
 	if isResolved {
 		// GitHubではコメントを折りたたむための専用Markdownフォーマット
-		return fmt.Sprintf("<details>\n<summary>Resolved comment from %s</summary>\n\n%s\n</details>", 
+		return fmt.Sprintf("<details>\n<summary>Resolved comment from %s</summary>\n\n%s\n</details>",
 			author, text)
 	}
-	
+
 	return text
 }

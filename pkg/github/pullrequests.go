@@ -7,40 +7,48 @@ import (
 	githublib "github.com/google/go-github/v60/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 	"github.com/krrrr38/gitlab-2-github/pkg/utils"
-	"github.com/xanzy/go-gitlab"
 )
 
-// CreatePullRequest creates a new pull request in GitHub
-func CreatePullRequest(ctx context.Context, client *Client, owner, repo, title, body, head, base string, mr *gitlab.MergeRequest) (*githublib.PullRequest, error) {
-	// タイトルはすでに切り詰め済みと想定します
+// PullRequestOptions contains options for creating a pull request
+type PullRequestOptions struct {
+	Title               string
+	Body                string
+	Head                string
+	Base                string
+	Draft               bool
+	MaintainerCanModify bool
+}
 
-	// Create the PR with retries
+// CreatePullRequest creates a new pull request in GitHub
+func CreatePullRequest(ctx context.Context, client *Client, owner, repo string, opts *PullRequestOptions) (*githublib.PullRequest, error) {
+	// Create pull request
+	newPR := &githublib.NewPullRequest{
+		Title:               githublib.String(opts.Title),
+		Body:                githublib.String(opts.Body),
+		Head:                githublib.String(opts.Head),
+		Base:                githublib.String(opts.Base),
+		MaintainerCanModify: githublib.Bool(opts.MaintainerCanModify),
+		Draft:               githublib.Bool(opts.Draft),
+	}
+
 	var pr *githublib.PullRequest
-	
-	err := RetryableOperation(ctx, func() error {
-		var err error
-		newPR := &githublib.NewPullRequest{
-			Title:               &title,
-			Body:                &body,
-			Head:                &head,
-			Base:                &base,
-			MaintainerCanModify: githublib.Bool(true),
-		}
-		
+	var err error
+
+	err = RetryableOperation(ctx, func() error {
 		pr, _, err = client.GetInner().PullRequests.Create(ctx, owner, repo, newPR)
 		return err
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GitHub PR: %w", err)
 	}
 
-	logger.Info("Created GitHub PR", "number", pr.GetNumber())
+	logger.Info("Created GitHub PR", "number", pr.GetNumber(), "url", pr.GetHTMLURL())
 	return pr, nil
 }
 
-// ClosePullRequest closes a pull request and optionally adds a merge comment
-func ClosePullRequest(ctx context.Context, client *Client, owner, repo string, prNumber int, wasMerged bool, mrIID int) error {
+// ClosePullRequest closes a pull request
+func ClosePullRequest(ctx context.Context, client *Client, owner, repo string, prNumber int) error {
 	// Close the PR with retries
 	err := RetryableOperation(ctx, func() error {
 		state := "closed"
@@ -50,27 +58,11 @@ func ClosePullRequest(ctx context.Context, client *Client, owner, repo string, p
 		_, _, err := client.GetInner().PullRequests.Edit(ctx, owner, repo, prNumber, closeRequest)
 		return err
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to close GitHub PR: %w", err)
 	}
-	
-	if wasMerged {
-		// Add a comment indicating it was merged in GitLab
-		comment := fmt.Sprintf("This PR was merged in GitLab as MR #%d", mrIID)
-		// コメントの長さは十分短いため切り詰めは不要
-		
-		err := RetryableOperation(ctx, func() error {
-			_, _, err := client.GetInner().Issues.CreateComment(ctx, owner, repo, prNumber, 
-				&githublib.IssueComment{Body: &comment})
-			return err
-		})
-		
-		if err != nil {
-			logger.Warn("Failed to add merged comment for PR", "number", prNumber, "error", err)
-		}
-	}
-	
+
 	return nil
 }
 
@@ -78,9 +70,9 @@ func ClosePullRequest(ctx context.Context, client *Client, owner, repo string, p
 func CreatePRComment(ctx context.Context, client *Client, owner, repo string, prNumber int, body string) error {
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
-	
+
 	return RetryableOperation(ctx, func() error {
-		_, _, err := client.GetInner().Issues.CreateComment(ctx, owner, repo, prNumber, 
+		_, _, err := client.GetInner().Issues.CreateComment(ctx, owner, repo, prNumber,
 			&githublib.IssueComment{Body: &truncatedBody})
 		return err
 	})
@@ -90,25 +82,25 @@ func CreatePRComment(ctx context.Context, client *Client, owner, repo string, pr
 func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo string, prNumber int, body, path string, position int) (*githublib.PullRequestComment, error) {
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
-	
+
 	var comment *githublib.PullRequestComment
-	
+
 	err := RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
 			Body:     &truncatedBody,
 			Path:     &path,
 			Position: githublib.Int(position),
 		}
-		
+
 		var err error
 		comment, _, err = client.GetInner().PullRequests.CreateComment(ctx, owner, repo, prNumber, reviewComment)
 		return err
 	})
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return comment, nil
 }
 
@@ -116,23 +108,23 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo string, prNumber int, body string, inReplyTo int64) (*githublib.PullRequestComment, error) {
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
-	
+
 	var comment *githublib.PullRequestComment
-	
+
 	err := RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
 			Body:      &truncatedBody,
 			InReplyTo: githublib.Int64(inReplyTo),
 		}
-		
+
 		var err error
 		comment, _, err = client.GetInner().PullRequests.CreateComment(ctx, owner, repo, prNumber, reviewComment)
 		return err
 	})
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return comment, nil
 }

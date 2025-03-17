@@ -10,6 +10,6 @@ type Config struct {
 	TempDir           string
 	IncludePRs        bool
 	FilterMergeReqIDs []int
-	ContinueFromMRID  int    // 指定したMR IDから処理を再開
+	ContinueFromMRID  int // 指定したMR IDから処理を再開
 	LogLevel          string
 }
