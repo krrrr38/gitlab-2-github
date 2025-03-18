@@ -235,6 +235,43 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 	if commitSHA == "" {
 		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
 	}
+	
+	// Get the diff for the file to extract diff_hunk
+	var diffHunk string
+	var side = "RIGHT" // Default to new file side
+	
+	err = RetryableOperation(ctx, func() error {
+		// Get the diff for the PR
+		opts := &githublib.ListOptions{PerPage: 100}
+		files, _, err := client.GetInner().PullRequests.ListFiles(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return err
+		}
+		
+		// Find the file that matches our path and extract its diff
+		for _, file := range files {
+			if file.GetFilename() == path {
+				// Extract relevant part of the patch as diff_hunk
+				patch := file.GetPatch()
+				if patch != "" {
+					// Just use the first few lines of the patch as diff_hunk
+					lines := strings.Split(patch, "\n")
+					if len(lines) > 5 {
+						lines = lines[:5] // Take first 5 lines
+					}
+					diffHunk = strings.Join(lines, "\n")
+					break
+				}
+			}
+		}
+		return nil
+	})
+	
+	if diffHunk == "" {
+		// Fallback: create a minimal valid diff hunk
+		logger.Warn("Failed to get diff for PR file, using fallback", "path", path)
+		diffHunk = fmt.Sprintf("@@ -1,1 +1,%d @@\nContent of %s", position, path)
+	}
 
 	err = RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
@@ -242,6 +279,8 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 			Path:     &path,
 			Line:     githublib.Int(position),    // Use Line instead of Position
 			CommitID: &commitSHA,                 // Required parameter
+			DiffHunk: githublib.String(diffHunk), // Add the diff hunk
+			Side:     githublib.String(side),     // Comment on the new version of the file
 		}
 
 		var err error
@@ -250,6 +289,7 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 	})
 
 	if err != nil {
+		logger.Error("Failed to create review comment", "error", err)
 		return nil, err
 	}
 

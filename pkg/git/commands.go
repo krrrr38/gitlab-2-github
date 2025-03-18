@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 )
