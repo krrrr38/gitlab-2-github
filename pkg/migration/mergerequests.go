@@ -149,6 +149,10 @@ func checkPRExistsInGitHub(ctx context.Context, githubClient *github.Client, own
 // processMergeRequest handles the migration of a single merge request
 // 戻り値として処理したコメント数も返す
 func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, githubClient *github.Client, cfg config.Config, mr *gitlablib.MergeRequest) (int, error) {
+	// 変数を関数の先頭で宣言してgoto文の問題を解決
+	var hasChanges bool
+	var hasChangesResult string
+	var pushBranchAndCreatePR bool
 	// Working directory for this MR
 	mrDir := fmt.Sprintf("%s/mr-%d", cfg.TempDir, mr.IID)
 	if err := git.CleanupDirectory(mrDir); err != nil {
@@ -261,9 +265,71 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 		return 0, fmt.Errorf("failed to get MR changes: %w", err)
 	}
 	
+	// Try to cherry-pick commits if enabled
+	if cfg.UseCherryPick && len(mrCommits) > 0 {
+		logger.Info("Using cherry-pick approach for commits", "count", len(mrCommits))
+		
+		cherryPickFailed := false
+		for i, commit := range mrCommits {
+			logger.Info("Cherry-picking commit", "index", i+1, "total", len(mrCommits), "sha", commit.ID, "message", commit.Message)
+			
+			// Use the new CherryPickCommit function that handles merge commits
+			if err := git.CherryPickCommit(mrDir, commit.ID, true, true); err != nil {
+				logger.Warn("Failed to cherry-pick commit", "sha", commit.ID, "error", err)
+				
+				// Abort any in-progress cherry-pick
+				abortCmd := fmt.Sprintf("cd %s && git cherry-pick --abort 2>/dev/null || true", mrDir)
+				_ = git.ExecuteCommand(abortCmd)
+				
+				cherryPickFailed = true
+				break
+			}
+		}
+		
+		if !cherryPickFailed {
+			// Check if cherry-pick was successful
+			statusCmd := fmt.Sprintf("cd %s && git status -s", mrDir)
+			statusOutput, err := git.ExecuteCommandWithOutput(statusCmd)
+			if err == nil && strings.TrimSpace(statusOutput) == "" {
+				logger.Info("Cherry-pick successful, skipping file-based changes")
+				
+				// Push the changes
+				pushCmd := fmt.Sprintf("cd %s && git push origin %s --force", mrDir, sourceBranch)
+				if err := git.ExecuteCommand(pushCmd); err != nil {
+					return 0, fmt.Errorf("failed to push source branch after cherry-pick: %w", err)
+				}
+				
+				// Push the branch and create PR without attempting file-based changes
+				// Use the modified approach to avoid goto issues
+				pushBranchAndCreatePR = true
+				// Continue with normal flow but skip file changes
+			}
+			
+			// If there are still uncommitted changes, continue with file-based approach as fallback
+			logger.Info("Cherry-pick completed but some changes remained uncommitted, applying file-based changes as well")
+		} else {
+			// Reset the branch to try again with file-based approach
+			resetCmd := fmt.Sprintf("cd %s && git reset --hard %s", mrDir, targetBranch)
+			if err := git.ExecuteCommand(resetCmd); err != nil {
+				return 0, fmt.Errorf("failed to reset source branch after cherry-pick failure: %w", err)
+			}
+			
+			// Recreate source branch
+			createSourceBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s-recreated %s && git branch -D %s && git branch -m %s", 
+				mrDir, sourceBranch, targetBranch, sourceBranch, sourceBranch)
+			if err := git.ExecuteCommand(createSourceBranchCmd); err != nil {
+				return 0, fmt.Errorf("failed to recreate source branch: %w", err)
+			}
+			
+			logger.Info("Falling back to file-based approach")
+		}
+	}
+	
 	logger.Info("Found changes to apply", "count", len(changes.Changes))
 	
-	// Apply each change from the GitLab MR to the source branch
+	// Skip file changes if we already applied them via cherry-pick
+	if !pushBranchAndCreatePR {
+		// Apply each change from the GitLab MR to the source branch
 	for _, change := range changes.Changes {
 		// Handle file deletion
 		if change.DeletedFile {
@@ -342,23 +408,30 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 		}
 	}
 
-	// Add all changes
-	addAllCmd := fmt.Sprintf("cd %s && git add --all", mrDir)
-	if err := git.ExecuteCommand(addAllCmd); err != nil {
-		return 0, fmt.Errorf("failed to add changes: %w", err)
+	} // end of if !pushBranchAndCreatePR block
+
+	// Only add changes if we didn't already do so with cherry-pick
+	if !pushBranchAndCreatePR {
+		// Add all changes
+		addAllCmd := fmt.Sprintf("cd %s && git add --all", mrDir)
+		if err := git.ExecuteCommand(addAllCmd); err != nil {
+			return 0, fmt.Errorf("failed to add changes: %w", err)
+		}
 	}
 	
-	// Check if there are changes to commit
-	checkChangesCmd := fmt.Sprintf("cd %s && git diff --staged --quiet || echo 'has_changes'", mrDir)
-	hasChangesResult, err := git.ExecuteCommandWithOutput(checkChangesCmd)
-	if err != nil {
-		return 0, fmt.Errorf("failed to check for changes: %w", err)
-	}
-	
-	hasChanges := strings.Contains(hasChangesResult, "has_changes")
-	
-	// Commit changes with a commit message based on the MR
-	if hasChanges {
+	// Check if there are changes to commit (only if we didn't use cherry-pick)
+	if !pushBranchAndCreatePR {
+		checkChangesCmd := fmt.Sprintf("cd %s && git diff --staged --quiet || echo 'has_changes'", mrDir)
+		var err error
+		hasChangesResult, err = git.ExecuteCommandWithOutput(checkChangesCmd)
+		if err != nil {
+			return 0, fmt.Errorf("failed to check for changes: %w", err)
+		}
+		
+		hasChanges = strings.Contains(hasChangesResult, "has_changes")
+		
+		// Commit changes with a commit message based on the MR
+		if hasChanges {
 		// Use original commit messages or a single summary message
 		var commitMsg string
 		if len(mrCommits) > 0 {
@@ -400,7 +473,7 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 			return 0, fmt.Errorf("failed to create empty commit: %w", err)
 		}
 	}
-	
+	}  // end of if !pushBranchAndCreatePR
 	// Add a metadata file
 	metadataContent := fmt.Sprintf("GitLab MR: %d\nTitle: %s\nSource: %s\nTarget: %s\nAuthor: %s\nCreated: %s\n",
 		mr.IID, mr.Title, mr.SourceBranch, mr.TargetBranch, mr.Author.Username, mr.CreatedAt.Format(time.RFC3339))

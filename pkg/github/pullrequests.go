@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	githublib "github.com/google/go-github/v60/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"

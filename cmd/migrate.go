@@ -30,6 +30,7 @@ func NewMigrateCommand(cfg *config.Config) *cobra.Command {
 	cmd.Flags().IntSliceVar(&cfg.FilterMergeReqIDs, "mr-ids", nil, "Filter specific merge request IDs to migrate")
 	cmd.Flags().IntVar(&cfg.ContinueFromMRID, "continue-from", 0, "Continue migration from the specified MR ID")
 	cmd.Flags().BoolVar(&cfg.ForceRecreate, "force-recreate", false, "Force delete and recreate the GitHub repository before migration")
+	cmd.Flags().BoolVar(&cfg.UseCherryPick, "use-cherry-pick", true, "Use cherry-pick with merge commit detection to preserve original commit history when possible")
 
 	return cmd
 }
