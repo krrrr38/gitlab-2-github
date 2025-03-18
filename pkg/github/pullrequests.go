@@ -198,16 +198,50 @@ func CreatePRComment(ctx context.Context, client *Client, owner, repo string, pr
 
 // CreatePRReviewComment creates a review comment on a specific line and file
 func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo string, prNumber int, body, path string, position int) (*githublib.PullRequestComment, error) {
+	logger.Debug("Creating PR review comment",
+		"owner", owner,
+		"repo", repo,
+		"prNumber", prNumber,
+		"path", path,
+		"position", position)
+
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
 
 	var comment *githublib.PullRequestComment
 
+	// First get the latest commit SHA for the PR
+	var commitSHA string
 	err := RetryableOperation(ctx, func() error {
+		pr, _, err := client.GetInner().PullRequests.Get(ctx, owner, repo, prNumber)
+		if err != nil {
+			return err
+		}
+		if pr.Head != nil && pr.Head.SHA != nil {
+			commitSHA = *pr.Head.SHA
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Error("Failed to get PR details for comment", 
+			"owner", owner, 
+			"repo", repo, 
+			"prNumber", prNumber, 
+			"error", err)
+		return nil, fmt.Errorf("failed to get PR details for comment: %w", err)
+	}
+
+	if commitSHA == "" {
+		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
+	}
+
+	err = RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
 			Body:     &truncatedBody,
 			Path:     &path,
-			Position: githublib.Int(position),
+			Line:     githublib.Int(position),    // Use Line instead of Position
+			CommitID: &commitSHA,                 // Required parameter
 		}
 
 		var err error
@@ -224,15 +258,62 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 
 // CreatePRReviewCommentReply creates a reply to an existing review comment
 func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo string, prNumber int, body string, inReplyTo int64) (*githublib.PullRequestComment, error) {
+	logger.Debug("Creating PR review comment reply",
+		"owner", owner,
+		"repo", repo,
+		"prNumber", prNumber,
+		"inReplyTo", inReplyTo)
+
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
 
-	var comment *githublib.PullRequestComment
-
+	// Verify the original comment exists
 	err := RetryableOperation(ctx, func() error {
+		_, _, err := client.GetInner().PullRequests.GetComment(ctx, owner, repo, inReplyTo)
+		return err
+	})
+
+	if err != nil {
+		logger.Error("Failed to get original comment for reply", 
+			"owner", owner, 
+			"repo", repo, 
+			"commentID", inReplyTo, 
+			"error", err)
+		return nil, fmt.Errorf("failed to get original comment for reply: %w", err)
+	}
+
+	// First get the latest commit SHA for the PR - needed for comment creation
+	var commitSHA string
+	err = RetryableOperation(ctx, func() error {
+		pr, _, err := client.GetInner().PullRequests.Get(ctx, owner, repo, prNumber)
+		if err != nil {
+			return err
+		}
+		if pr.Head != nil && pr.Head.SHA != nil {
+			commitSHA = *pr.Head.SHA
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Error("Failed to get PR details for comment reply", 
+			"owner", owner, 
+			"repo", repo, 
+			"prNumber", prNumber, 
+			"error", err)
+		return nil, fmt.Errorf("failed to get PR details for comment reply: %w", err)
+	}
+
+	if commitSHA == "" {
+		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
+	}
+
+	var comment *githublib.PullRequestComment
+	err = RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
 			Body:      &truncatedBody,
 			InReplyTo: githublib.Int64(inReplyTo),
+			CommitID:  &commitSHA,    // Required parameter
 		}
 
 		var err error

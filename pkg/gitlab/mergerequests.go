@@ -135,6 +135,32 @@ func GetMergeRequestApprovals(client *gitlab.Client, projectID string, mrIID int
 	return approvalInfos, nil
 }
 
+// GetMergeRequestCommits retrieves commits from a GitLab merge request
+func GetMergeRequestCommits(client *gitlab.Client, projectID string, mrIID int) ([]*gitlab.Commit, error) {
+	opts := &gitlab.GetMergeRequestCommitsOptions{
+		PerPage: 100,
+	}
+
+	var allCommits []*gitlab.Commit
+	for {
+		commits, resp, err := client.MergeRequests.GetMergeRequestCommits(projectID, mrIID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list GitLab MR commits: %w", err)
+		}
+
+		allCommits = append(allCommits, commits...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
+	}
+
+	logger.Info("Found commits for MR", "count", len(allCommits), "mr_id", mrIID)
+	return allCommits, nil
+}
+
 // GetMergeRequestEvents retrieves events for a GitLab merge request
 func GetMergeRequestEvents(client *gitlab.Client, projectID string, mrIID int) ([]*gitlab.StateEvent, error) {
 	opts := &gitlab.ListStateEventsOptions{
