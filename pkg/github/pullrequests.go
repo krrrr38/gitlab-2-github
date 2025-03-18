@@ -382,9 +382,7 @@ func resolveReviewThread(ctx context.Context, client *Client, owner, repo string
 	}
 
 	// Execute the mutation to resolve the thread
-	err = client.GetV4().Mutate(ctx, &mutation, map[string]interface{}{
-		"input": resolveInput,
-	})
+	err = client.GetV4().Mutate(ctx, &mutation, resolveInput, nil)
 
 	if err != nil {
 		return fmt.Errorf("failed to resolve review thread: %w", err)
