@@ -502,14 +502,63 @@ func recreateWithSingleCommit(ctx context.Context, gitlabClient *gitlablib.Clien
 		
 		// Apply changes to recreate the diff
 		for _, change := range changes.Changes {
-			// Ensure directory exists
-			dirCmd := fmt.Sprintf("cd %s && mkdir -p $(dirname %s)", mrDir, change.NewPath)
-			_ = git.ExecuteCommand(dirCmd) // Ignore error if directory already exists
+			// Skip paths starting with dot to avoid issues
+			if len(change.NewPath) > 0 && change.NewPath[0] == '.' {
+				logger.Debug("Skipping dot file", "path", change.NewPath)
+				continue
+			}
 			
-			// Write the file with the new content
-			writeCmd := fmt.Sprintf("cd %s && cat > '%s' << 'EOFMARKER'\n%s\nEOFMARKER", 
-				mrDir, change.NewPath, change.Diff)
-			_ = git.ExecuteCommand(writeCmd)
+			// Ensure directory exists
+			if change.NewPath != "" {
+				dirCmd := fmt.Sprintf("cd %s && mkdir -p $(dirname %s)", mrDir, change.NewPath)
+				_ = git.ExecuteCommand(dirCmd) // Ignore error if directory already exists
+			}
+			
+			// Handle file deletion
+			if change.DeletedFile {
+				if change.OldPath != "" {
+					rmCmd := fmt.Sprintf("cd %s && rm -f '%s'", mrDir, change.OldPath)
+					_ = git.ExecuteCommand(rmCmd)
+				}
+				continue
+			}
+			
+			// Handle renamed files
+			if change.RenamedFile {
+				if change.OldPath != "" && change.NewPath != "" {
+					mvCmd := fmt.Sprintf("cd %s && mkdir -p $(dirname %s) && [ -f '%s' ] && mv '%s' '%s' || true", 
+						mrDir, change.NewPath, change.OldPath, change.OldPath, change.NewPath)
+					_ = git.ExecuteCommand(mvCmd)
+				}
+			}
+			
+			// Get file content directly from GitLab
+			if change.NewPath != "" {
+				// Fetch the file content using GitLab API
+				logger.Debug("Fetching file content", "path", change.NewPath)
+				fileContent, _, err := gitlabClient.RepositoryFiles.GetFile(
+					cfg.GitLabProjectID, 
+					change.NewPath, 
+					&gitlablib.GetFileOptions{Ref: gitlablib.String(mr.SHA)})
+				
+				if err != nil {
+					logger.Warn("Failed to get file content, will use empty file", 
+						"path", change.NewPath, 
+						"error", err)
+					// Create an empty file if we can't get the content
+					touchCmd := fmt.Sprintf("cd %s && touch '%s'", mrDir, change.NewPath)
+					_ = git.ExecuteCommand(touchCmd)
+				} else {
+					// Write the file with the decoded content
+					writeCmd := fmt.Sprintf("cd %s && cat > '%s' << 'EOFMARKER'\n%s\nEOFMARKER", 
+						mrDir, change.NewPath, fileContent.Content)
+					if err := git.ExecuteCommand(writeCmd); err != nil {
+						logger.Warn("Failed to write file content", 
+							"path", change.NewPath, 
+							"error", err)
+					}
+				}
+			}
 		}
 	}
 
