@@ -97,17 +97,17 @@ func runMigration(cfg config.Config) error {
 	// Check if force recreation is requested
 	if cfg.ForceRecreate {
 		logger.Info("Force recreation requested, deleting GitHub repository if it exists...")
-		
+
 		// Try to delete the repository
 		err := github.DeleteRepository(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
 		if err != nil {
 			// Non-existing repository will return an error, but we can ignore it as we'll create it anyway
 			logger.Info("Failed to delete repository, it might not exist yet", "error", err)
 		}
-		
+
 		// Add a small delay to ensure the deletion is processed
 		time.Sleep(2 * time.Second)
-		
+
 		// リポジトリをミラーリング（削除後なので存在しないはず）
 		logger.Info("Mirroring repository to newly created target...")
 		if err := migration.MirrorRepository(cfg); err != nil {

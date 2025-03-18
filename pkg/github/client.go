@@ -12,12 +12,14 @@ import (
 
 	"github.com/google/go-github/v60/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
+	"github.com/shurcooL/githubv4"
 	"golang.org/x/oauth2"
 )
 
 // Client wraps the GitHub client with retry capabilities
 type Client struct {
 	inner *github.Client
+	v4    *githubv4.Client
 }
 
 // NewClient creates a new GitHub client with the provided token
@@ -30,6 +32,7 @@ func NewClient(token string) *Client {
 
 	return &Client{
 		inner: github.NewClient(tc),
+		v4:    githubv4.NewClient(tc),
 	}
 }
 
@@ -38,10 +41,15 @@ func (c *Client) GetInner() *github.Client {
 	return c.inner
 }
 
+// GetV4 returns the underlying GitHub GraphQL client
+func (c *Client) GetV4() *githubv4.Client {
+	return c.v4
+}
+
 // DeleteRepository deletes a GitHub repository
 func DeleteRepository(ctx context.Context, client *Client, owner, repo string) error {
 	logger.Info("Deleting GitHub repository", "owner", owner, "repo", repo)
-	
+
 	err := RetryableOperation(ctx, func() error {
 		_, err := client.GetInner().Repositories.Delete(ctx, owner, repo)
 		return err
@@ -59,13 +67,13 @@ func DeleteRepository(ctx context.Context, client *Client, owner, repo string) e
 // CreateRepository creates an empty GitHub repository
 func CreateRepository(ctx context.Context, client *Client, owner, repo string, private bool) error {
 	logger.Info("Creating GitHub repository", "owner", owner, "repo", repo, "private", private)
-	
+
 	newRepo := &github.Repository{
-		Name:     github.String(repo),
-		Private:  github.Bool(private),
+		Name:      github.String(repo),
+		Private:   github.Bool(private),
 		HasIssues: github.Bool(true),
-		HasWiki:  github.Bool(true),
-		AutoInit: github.Bool(false), // Don't initialize with README
+		HasWiki:   github.Bool(true),
+		AutoInit:  github.Bool(false), // Don't initialize with README
 	}
 
 	err := RetryableOperation(ctx, func() error {

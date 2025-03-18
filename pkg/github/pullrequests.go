@@ -3,11 +3,11 @@ package github
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	githublib "github.com/google/go-github/v60/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 	"github.com/krrrr38/gitlab-2-github/pkg/utils"
+	"github.com/shurcooL/githubv4"
 )
 
 // min returns the smaller of x or y.
@@ -197,19 +197,18 @@ func CreatePRComment(ctx context.Context, client *Client, owner, repo string, pr
 	})
 }
 
-// CreatePRReviewComment creates a review comment on a specific line and file
-func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo string, prNumber int, body, path string, position int) (*githublib.PullRequestComment, error) {
+// CreatePRReview creates a single review comment and returns the review ID
+func CreatePRReview(ctx context.Context, client *Client, owner, repo string, prNumber int, body, path string, position int, resolved bool) (*githublib.PullRequestReview, error) {
 	logger.Debug("Creating PR review comment",
 		"owner", owner,
 		"repo", repo,
 		"prNumber", prNumber,
 		"path", path,
-		"position", position)
+		"position", position,
+		"resolved", resolved)
 
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
-
-	var comment *githublib.PullRequestComment
 
 	// First get the latest commit SHA for the PR
 	var commitSHA string
@@ -225,10 +224,10 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 	})
 
 	if err != nil {
-		logger.Error("Failed to get PR details for comment", 
-			"owner", owner, 
-			"repo", repo, 
-			"prNumber", prNumber, 
+		logger.Error("Failed to get PR details for comment",
+			"owner", owner,
+			"repo", repo,
+			"prNumber", prNumber,
 			"error", err)
 		return nil, fmt.Errorf("failed to get PR details for comment: %w", err)
 	}
@@ -236,74 +235,172 @@ func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo stri
 	if commitSHA == "" {
 		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
 	}
-	
-	// Get the diff for the file to extract diff_hunk
-	var diffHunk string
-	var side = "RIGHT" // Default to new file side
-	
-	err = RetryableOperation(ctx, func() error {
-		// Get the diff for the PR
-		opts := &githublib.ListOptions{PerPage: 100}
-		files, _, err := client.GetInner().PullRequests.ListFiles(ctx, owner, repo, prNumber, opts)
-		if err != nil {
-			return err
-		}
-		
-		// Find the file that matches our path and extract its diff
-		for _, file := range files {
-			if file.GetFilename() == path {
-				// Extract relevant part of the patch as diff_hunk
-				patch := file.GetPatch()
-				if patch != "" {
-					// Just use the first few lines of the patch as diff_hunk
-					lines := strings.Split(patch, "\n")
-					if len(lines) > 5 {
-						lines = lines[:5] // Take first 5 lines
-					}
-					diffHunk = strings.Join(lines, "\n")
-					break
-				}
-			}
-		}
-		return nil
-	})
-	
-	if diffHunk == "" {
-		// Fallback: create a minimal valid diff hunk
-		logger.Warn("Failed to get diff for PR file, using fallback", "path", path)
-		diffHunk = fmt.Sprintf("@@ -1,1 +1,%d @@\nContent of %s", position, path)
-	}
 
+	// Create a draft review with the comment
+	var review *githublib.PullRequestReview
 	err = RetryableOperation(ctx, func() error {
-		reviewComment := &githublib.PullRequestComment{
-			Body:     &truncatedBody,
-			Path:     &path,
-			Line:     githublib.Int(position),    // Use Line instead of Position
-			CommitID: &commitSHA,                 // Required parameter
-			DiffHunk: githublib.String(diffHunk), // Add the diff hunk
-			Side:     githublib.String(side),     // Comment on the new version of the file
+		// Create a draft review comment
+		draftComment := &githublib.DraftReviewComment{
+			Path:     githublib.String(path),
+			Position: githublib.Int(position),
+			Body:     githublib.String(truncatedBody),
+		}
+
+		// Create the review request with the comment
+		reviewRequest := &githublib.PullRequestReviewRequest{
+			CommitID: githublib.String(commitSHA),
+			Body:     githublib.String(""),
+			Event:    githublib.String("COMMENT"),
+			Comments: []*githublib.DraftReviewComment{draftComment},
 		}
 
 		var err error
-		comment, _, err = client.GetInner().PullRequests.CreateComment(ctx, owner, repo, prNumber, reviewComment)
+		review, _, err = client.GetInner().PullRequests.CreateReview(ctx, owner, repo, prNumber, reviewRequest)
 		return err
 	})
 
 	if err != nil {
-		logger.Error("Failed to create review comment", "error", err)
+		logger.Error("Failed to create review", "error", err)
 		return nil, err
+	}
+
+	// If the comment should be resolved, use GraphQL API to resolve it
+	if resolved && review != nil && review.ID != nil {
+		// Get the review thread ID using the review ID
+		// This requires an additional GraphQL query
+		err = resolveReviewThread(ctx, client, owner, repo, prNumber, *review.ID)
+		if err != nil {
+			logger.Warn("Failed to resolve review thread",
+				"reviewID", review.GetID(),
+				"error", err)
+			// We'll continue even if resolving failed
+		} else {
+			logger.Info("Successfully resolved review thread",
+				"reviewID", review.GetID())
+		}
+	}
+
+	return review, nil
+}
+
+// CreatePRReviewComment is a legacy method that creates a review comment
+// This function now uses CreatePRReview internally
+func CreatePRReviewComment(ctx context.Context, client *Client, owner, repo string, prNumber int, body, path string, position int) (*githublib.PullRequestComment, error) {
+	review, err := CreatePRReview(ctx, client, owner, repo, prNumber, body, path, position, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// For backward compatibility, return a comment structure
+	// (this is not ideal but maintains compatibility)
+	comment := &githublib.PullRequestComment{
+		Body: githublib.String(body),
+		Path: githublib.String(path),
+		ID:   review.ID, // Use review ID as comment ID
 	}
 
 	return comment, nil
 }
 
+// resolveReviewThread resolves a review thread using GitHub's GraphQL API
+func resolveReviewThread(ctx context.Context, client *Client, owner, repo string, prNumber int, reviewID int64) error {
+	// First, we need to get the thread ID from the review ID
+	// The review ID doesn't directly map to the thread ID in GitHub's GraphQL API
+
+	// Define the query
+	var query struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					Nodes []struct {
+						ID         string
+						IsResolved bool
+						Comments   struct {
+							Nodes []struct {
+								ID                string
+								PullRequestReview struct {
+									DatabaseID int64
+								}
+							}
+						} `graphql:"comments(first: 5)"`
+					}
+				} `graphql:"reviewThreads(first: 50)"`
+			} `graphql:"pullRequest(number: $prNumber)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	// Set up query variables
+	variables := map[string]interface{}{
+		"owner":    githubv4.String(owner),
+		"name":     githubv4.String(repo),
+		"prNumber": githubv4.Int(prNumber),
+	}
+
+	// Execute the query to get review threads
+	err := client.GetV4().Query(ctx, &query, variables)
+	if err != nil {
+		return fmt.Errorf("failed to query review threads: %w", err)
+	}
+
+	// Find the thread that belongs to our review
+	var threadID string
+	for _, thread := range query.Repository.PullRequest.ReviewThreads.Nodes {
+		// Skip already resolved threads
+		if thread.IsResolved {
+			continue
+		}
+
+		// Check if any comment in this thread belongs to our review
+		for _, comment := range thread.Comments.Nodes {
+			if comment.PullRequestReview.DatabaseID == reviewID {
+				threadID = thread.ID
+				break
+			}
+		}
+
+		if threadID != "" {
+			break
+		}
+	}
+
+	if threadID == "" {
+		return fmt.Errorf("could not find thread for review ID %d", reviewID)
+	}
+
+	// Now that we have the thread ID, we can resolve it
+	var mutation struct {
+		ResolveReviewThread struct {
+			Thread struct {
+				ID string
+			}
+		} `graphql:"resolveReviewThread(input: $input)"`
+	}
+
+	// Set up the mutation input
+	resolveInput := githubv4.ResolveReviewThreadInput{
+		ThreadID: githubv4.ID(threadID),
+	}
+
+	// Execute the mutation to resolve the thread
+	err = client.GetV4().Mutate(ctx, &mutation, map[string]interface{}{
+		"input": resolveInput,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to resolve review thread: %w", err)
+	}
+
+	return nil
+}
+
 // CreatePRReviewCommentReply creates a reply to an existing review comment
-func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo string, prNumber int, body string, inReplyTo int64) (*githublib.PullRequestComment, error) {
+func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo string, prNumber int, body string, inReplyTo int64, resolved bool) (*githublib.PullRequestComment, error) {
 	logger.Debug("Creating PR review comment reply",
 		"owner", owner,
 		"repo", repo,
 		"prNumber", prNumber,
-		"inReplyTo", inReplyTo)
+		"inReplyTo", inReplyTo,
+		"resolved", resolved)
 
 	// 文字数制限に合わせて切り詰める
 	truncatedBody := utils.TruncateText(body, utils.MaxCommentLength)
@@ -315,15 +412,15 @@ func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo
 	})
 
 	if err != nil {
-		logger.Error("Failed to get original comment for reply", 
-			"owner", owner, 
-			"repo", repo, 
-			"commentID", inReplyTo, 
+		logger.Error("Failed to get original comment for reply",
+			"owner", owner,
+			"repo", repo,
+			"commentID", inReplyTo,
 			"error", err)
 		return nil, fmt.Errorf("failed to get original comment for reply: %w", err)
 	}
 
-	// First get the latest commit SHA for the PR - needed for comment creation
+	// Get the latest commit SHA for the PR
 	var commitSHA string
 	err = RetryableOperation(ctx, func() error {
 		pr, _, err := client.GetInner().PullRequests.Get(ctx, owner, repo, prNumber)
@@ -337,10 +434,10 @@ func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo
 	})
 
 	if err != nil {
-		logger.Error("Failed to get PR details for comment reply", 
-			"owner", owner, 
-			"repo", repo, 
-			"prNumber", prNumber, 
+		logger.Error("Failed to get PR details for comment reply",
+			"owner", owner,
+			"repo", repo,
+			"prNumber", prNumber,
 			"error", err)
 		return nil, fmt.Errorf("failed to get PR details for comment reply: %w", err)
 	}
@@ -349,21 +446,36 @@ func CreatePRReviewCommentReply(ctx context.Context, client *Client, owner, repo
 		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
 	}
 
+	// Create a reply using the standard GitHub API
 	var comment *githublib.PullRequestComment
 	err = RetryableOperation(ctx, func() error {
 		reviewComment := &githublib.PullRequestComment{
 			Body:      &truncatedBody,
 			InReplyTo: githublib.Int64(inReplyTo),
-			CommitID:  &commitSHA,    // Required parameter
+			CommitID:  &commitSHA,
 		}
 
-		var err error
-		comment, _, err = client.GetInner().PullRequests.CreateComment(ctx, owner, repo, prNumber, reviewComment)
-		return err
+		var createErr error
+		comment, _, createErr = client.GetInner().PullRequests.CreateComment(ctx, owner, repo, prNumber, reviewComment)
+		return createErr
 	})
 
 	if err != nil {
 		return nil, err
+	}
+
+	// If resolved flag is set, try to resolve this comment thread
+	if resolved && comment != nil && comment.ID != nil {
+		threadErr := resolveReviewThread(ctx, client, owner, repo, prNumber, *comment.ID)
+		if threadErr != nil {
+			logger.Warn("Failed to resolve review thread for reply",
+				"commentID", comment.GetID(),
+				"error", threadErr)
+			// Continue even if resolving failed
+		} else {
+			logger.Info("Successfully resolved review thread for reply",
+				"commentID", comment.GetID())
+		}
 	}
 
 	return comment, nil

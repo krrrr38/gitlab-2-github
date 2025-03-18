@@ -173,16 +173,16 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	logger.Info("Creating unique branches for migration", "mr", mr.IID, "source", sourceBranch, "target", targetBranch)
 
 	// Add GitLab remote to help with Git operations
-	gitlabRemoteURL := fmt.Sprintf("https://oauth2:%s@%s/%s.git", 
-		cfg.GitLabToken, 
-		strings.TrimPrefix(cfg.GitLabURL, "https://"), 
+	gitlabRemoteURL := fmt.Sprintf("https://oauth2:%s@%s/%s.git",
+		cfg.GitLabToken,
+		strings.TrimPrefix(cfg.GitLabURL, "https://"),
 		cfg.GitLabProjectID)
-	
+
 	addRemoteCmd := fmt.Sprintf("cd %s && git remote add gitlab %s", mrDir, gitlabRemoteURL)
 	if err := git.ExecuteCommand(addRemoteCmd); err != nil {
 		return 0, fmt.Errorf("failed to add GitLab remote: %w", err)
 	}
-	
+
 	// Fetch everything from GitLab
 	fetchCmd := fmt.Sprintf("cd %s && git fetch gitlab --prune --tags", mrDir)
 	if err := git.ExecuteCommand(fetchCmd); err != nil {
@@ -195,25 +195,25 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	}
 
 	// Log the SHA values for debugging
-	logger.Info("Using DiffRefs for exact commit matching", 
+	logger.Info("Using DiffRefs for exact commit matching",
 		"mr_id", mr.IID,
 		"base_sha", mr.DiffRefs.BaseSha,
 		"head_sha", mr.DiffRefs.HeadSha)
 
 	// Create target branch from base_sha
-	targetBaseSHACmd := fmt.Sprintf("cd %s && git checkout -b %s %s", 
+	targetBaseSHACmd := fmt.Sprintf("cd %s && git checkout -b %s %s",
 		mrDir, targetBranch, mr.DiffRefs.BaseSha)
-	
+
 	if err := git.ExecuteCommand(targetBaseSHACmd); err != nil {
-		logger.Warn("Failed to checkout target branch from BaseSha", 
-			"branch", targetBranch, 
-			"base_sha", mr.DiffRefs.BaseSha, 
+		logger.Warn("Failed to checkout target branch from BaseSha",
+			"branch", targetBranch,
+			"base_sha", mr.DiffRefs.BaseSha,
 			"error", err)
-		
+
 		// Fallback to using target branch directly
-		targetBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s gitlab/%s", 
+		targetBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s gitlab/%s",
 			mrDir, targetBranch, mr.TargetBranch)
-		
+
 		if err := git.ExecuteCommand(targetBranchCmd); err != nil {
 			return 0, fmt.Errorf("failed to create target branch: %w", err)
 		}
@@ -226,28 +226,28 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	}
 
 	// Create source branch from head_sha
-	createSourceBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s %s", 
+	createSourceBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s %s",
 		mrDir, sourceBranch, mr.DiffRefs.HeadSha)
-	
+
 	if err := git.ExecuteCommand(createSourceBranchCmd); err != nil {
-		logger.Warn("Failed to checkout source branch from HeadSha", 
-			"branch", sourceBranch, 
-			"head_sha", mr.DiffRefs.HeadSha, 
+		logger.Warn("Failed to checkout source branch from HeadSha",
+			"branch", sourceBranch,
+			"head_sha", mr.DiffRefs.HeadSha,
 			"error", err)
-			
+
 		// Fallback to using source branch directly
-		sourceBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s gitlab/%s", 
+		sourceBranchCmd := fmt.Sprintf("cd %s && git checkout -b %s gitlab/%s",
 			mrDir, sourceBranch, mr.SourceBranch)
-			
+
 		if err := git.ExecuteCommand(sourceBranchCmd); err != nil {
 			// Last resort: create from target
-			lastResortCmd := fmt.Sprintf("cd %s && git checkout -b %s %s", 
+			lastResortCmd := fmt.Sprintf("cd %s && git checkout -b %s %s",
 				mrDir, sourceBranch, targetBranch)
-				
+
 			if err := git.ExecuteCommand(lastResortCmd); err != nil {
 				return 0, fmt.Errorf("failed to create source branch: %w", err)
 			}
-			
+
 			// At this point, we need to apply changes manually
 			logger.Warn("Using manual changes application as fallback")
 		} else {
@@ -261,18 +261,18 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	if err := git.ExecuteCommand(pushSourceCmd); err != nil {
 		return 0, fmt.Errorf("failed to push source branch: %w", err)
 	}
-	
+
 	// Add metadata file for reference
 	logger.Info("Adding MR metadata information")
-	
+
 	// Add a metadata file
 	metadataContent := fmt.Sprintf("GitLab MR: %d\nTitle: %s\nSource: %s\nTarget: %s\nAuthor: %s\nCreated: %s\nBaseSha: %s\nHeadSha: %s\n",
-		mr.IID, mr.Title, mr.SourceBranch, mr.TargetBranch, mr.Author.Username, 
+		mr.IID, mr.Title, mr.SourceBranch, mr.TargetBranch, mr.Author.Username,
 		mr.CreatedAt.Format(time.RFC3339), mr.DiffRefs.BaseSha, mr.DiffRefs.HeadSha)
-		
-	metadataCmd := fmt.Sprintf("cd %s && echo '%s' > %s", 
-		mrDir, 
-		metadataContent, 
+
+	metadataCmd := fmt.Sprintf("cd %s && echo '%s' > %s",
+		mrDir,
+		metadataContent,
 		fmt.Sprintf(".gitlab-mr-%d-metadata", mr.IID))
 	if err := git.ExecuteCommand(metadataCmd); err != nil {
 		logger.Warn("Failed to create metadata file, continuing anyway", "error", err)
@@ -280,15 +280,15 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 		// Commit the metadata file
 		addMetadataCmd := fmt.Sprintf("cd %s && git add .gitlab-mr-%d-metadata", mrDir, mr.IID)
 		_ = git.ExecuteCommand(addMetadataCmd)
-		
+
 		commitMetadataCmd := fmt.Sprintf("cd %s && git commit -m 'Add GitLab MR %d metadata'", mrDir, mr.IID)
 		_ = git.ExecuteCommand(commitMetadataCmd)
-		
+
 		// Push the metadata commit
 		pushMetadataCmd := fmt.Sprintf("cd %s && git push origin %s", mrDir, sourceBranch)
 		_ = git.ExecuteCommand(pushMetadataCmd)
 	}
-	
+
 	// Create GitHub PR
 	// Prepare PR title (with truncation if needed)
 	title := utils.TruncateText(mr.Title, utils.MaxPRTitleLength)
@@ -363,37 +363,37 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 		// Special handling for no diff error
 		if noDiffErr, ok := err.(*github.NoDiffError); ok {
 			logger.Info("No difference found between branches, adding dummy commit to source branch", "source", noDiffErr.Head, "target", noDiffErr.Base)
-			
+
 			// Create a dummy file to ensure there's a diff
 			dummyContent := fmt.Sprintf("GitLab MR: %d\nTitle: %s\nAuthor: %s\nCreated: %s\nState: %s\n",
 				mr.IID, mr.Title, mr.Author.Username, mr.CreatedAt.Format(time.RFC3339), mr.State)
-			
+
 			// Write the dummy file and commit it
-			createFileCmd := fmt.Sprintf("cd %s && echo '%s' > %s", 
-				mrDir, 
-				dummyContent, 
+			createFileCmd := fmt.Sprintf("cd %s && echo '%s' > %s",
+				mrDir,
+				dummyContent,
 				".gitlab-mr-"+fmt.Sprintf("%d", mr.IID)+"-dummy")
 			if err := git.ExecuteCommand(createFileCmd); err != nil {
 				return 0, fmt.Errorf("failed to create dummy file: %w", err)
 			}
-			
+
 			// Add and commit the file
 			addCmd := fmt.Sprintf("cd %s && git add .", mrDir)
 			if err := git.ExecuteCommand(addCmd); err != nil {
 				return 0, fmt.Errorf("failed to add dummy file: %w", err)
 			}
-			
+
 			commitCmd := fmt.Sprintf("cd %s && git commit -m 'Add dummy file for GitLab MR %d to ensure diff'", mrDir, mr.IID)
 			if err := git.ExecuteCommand(commitCmd); err != nil {
 				return 0, fmt.Errorf("failed to commit dummy file: %w", err)
 			}
-			
+
 			// Push the branch again
 			pushCmd := fmt.Sprintf("cd %s && git push origin %s --force", mrDir, sourceBranch)
 			if err := git.ExecuteCommand(pushCmd); err != nil {
 				return 0, fmt.Errorf("failed to push source branch with dummy commit: %w", err)
 			}
-			
+
 			// Try to create the PR again
 			err = github.RetryableOperation(ctx, func() error {
 				var createErr error
@@ -407,7 +407,7 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 				})
 				return createErr
 			})
-			
+
 			if err != nil {
 				return 0, fmt.Errorf("failed to create GitHub PR after adding dummy commit: %w", err)
 			}
@@ -508,7 +508,8 @@ func migrateComments(ctx context.Context, gitlabClient *gitlablib.Client, github
 		}
 
 		// Process and create the comment, tracking the GitHub ID
-		ghCommentID, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, 0, discussionNote.Discussion)
+		isResolved := note.Resolvable && note.Resolved
+		ghCommentID, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, 0, discussionNote.Discussion, isResolved)
 		if err != nil {
 			logger.Warn("Failed to create comment", "gitlab_id", note.ID, "error", err)
 			continue
@@ -539,7 +540,8 @@ func migrateComments(ctx context.Context, gitlabClient *gitlablib.Client, github
 		if !exists {
 			// If we can't find the parent, create as a standalone comment
 			logger.Warn("Parent comment not found, creating as standalone", "gitlab_id", note.ID, "parent_id", discussionNote.ParentID)
-			_, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, 0, discussionNote.Discussion)
+			isResolved := note.Resolvable && note.Resolved
+			_, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, 0, discussionNote.Discussion, isResolved)
 			if err != nil {
 				logger.Warn("Failed to create fallback comment", "error", err)
 			}
@@ -548,7 +550,8 @@ func migrateComments(ctx context.Context, gitlabClient *gitlablib.Client, github
 		}
 
 		// Create as a reply to the parent
-		ghCommentID, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, parentGHID, discussionNote.Discussion)
+		isResolved := note.Resolvable && note.Resolved
+		ghCommentID, err := createGitHubComment(ctx, githubClient, cfg, prNumber, note, parentGHID, discussionNote.Discussion, isResolved)
 		if err != nil {
 			logger.Warn("Failed to create reply comment", "gitlab_id", note.ID, "error", err)
 			continue
@@ -566,12 +569,8 @@ func migrateComments(ctx context.Context, gitlabClient *gitlablib.Client, github
 
 // createGitHubComment creates a GitHub comment from a GitLab note
 // Returns the GitHub comment ID if successful, or 0 if failed
-func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg config.Config, prNumber int, note *gitlablib.Note, replyToID int64, discussionID string) (int64, error) {
-	// Check if comment is resolved
-	isResolved := false
-	if note.Resolvable && note.Resolved {
-		isResolved = true
-	}
+func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg config.Config, prNumber int, note *gitlablib.Note, replyToID int64, discussionID string, isResolved bool) (int64, error) {
+	// isResolved parameter is now passed directly from the caller
 
 	// Process comment content with truncation - leave more room for metadata
 	commentText := utils.TruncateText(note.Body, utils.MaxCommentLength-250) // Leave room for header, metadata and wrapping
@@ -628,6 +627,7 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 			prNumber,
 			commentBody,
 			replyToID,
+			isResolved, // Pass the resolved flag
 		)
 		if err != nil {
 			// Fall back to regular comment
@@ -641,12 +641,14 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 	} else if note.Position != nil && note.Position.NewPath != "" {
 		// This is a review comment (on code)
 		// Log position information for debugging
-		logger.Debug("Review comment position info", 
+		logger.Debug("Review comment position info",
 			"path", note.Position.NewPath,
 			"new_line", note.Position.NewLine,
-			"old_line", note.Position.OldLine)
+			"old_line", note.Position.OldLine,
+			"resolved", isResolved)
 
-		comment, err := github.CreatePRReviewComment(
+		// Use the new CreatePRReview function that supports resolved comments
+		review, err := github.CreatePRReview(
 			ctx,
 			githubClient,
 			cfg.GitHubOwner,
@@ -655,6 +657,7 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 			commentBody,
 			note.Position.NewPath,
 			note.Position.NewLine,
+			isResolved,
 		)
 		if err != nil {
 			// Fall back to regular comment
@@ -664,7 +667,12 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 			}
 			return 0, nil // No ID to track for regular comments
 		}
-		return comment.GetID(), nil
+
+		// Return the review ID
+		if review != nil && review.ID != nil {
+			return *review.ID, nil
+		}
+		return 0, nil // No ID to track
 	} else {
 		// Regular comment
 		if err := github.CreatePRComment(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo, prNumber, commentBody); err != nil {
@@ -692,10 +700,7 @@ func migrateSimpleComments(ctx context.Context, gitlabClient *gitlablib.Client, 
 		}
 
 		// Check if comment is resolved
-		isResolved := false
-		if note.Resolvable && note.Resolved {
-			isResolved = true
-		}
+		isResolved := note.Resolvable && note.Resolved
 
 		// Process comment content with truncation - leave more room for metadata
 		commentText := utils.TruncateText(note.Body, utils.MaxCommentLength-250) // Leave room for header, metadata and wrapping
@@ -739,12 +744,13 @@ func migrateSimpleComments(ctx context.Context, gitlabClient *gitlablib.Client, 
 		// If we have position information, try to create a review comment
 		if note.Position.NewPath != "" {
 			// Log position information for debugging
-			logger.Debug("Review comment position info (simple mode)", 
+			logger.Debug("Review comment position info (simple mode)",
 				"path", note.Position.NewPath,
 				"new_line", note.Position.NewLine,
 				"old_line", note.Position.OldLine)
 
-			_, err := github.CreatePRReviewComment(
+			// Use the new review function with resolved flag
+			_, err := github.CreatePRReview(
 				ctx,
 				githubClient,
 				cfg.GitHubOwner,
@@ -753,6 +759,7 @@ func migrateSimpleComments(ctx context.Context, gitlabClient *gitlablib.Client, 
 				commentBody,
 				note.Position.NewPath,
 				note.Position.NewLine,
+				isResolved,
 			)
 
 			if err != nil {
