@@ -236,14 +236,59 @@ func CreatePRReview(ctx context.Context, client *Client, owner, repo string, prN
 		return nil, fmt.Errorf("could not determine HEAD commit SHA for PR")
 	}
 
+	// Get diff information so we can create a proper review
+	var fileFound bool
+	err = RetryableOperation(ctx, func() error {
+		// Get the full PR diff
+		opts := &githublib.ListOptions{
+			PerPage: 100,
+		}
+		files, _, err := client.GetInner().PullRequests.ListFiles(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return err
+		}
+
+		// Find the file that matches our path
+		for _, file := range files {
+			if file.GetFilename() == path {
+				fileFound = true
+				break
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Error("Failed to get PR diff", "error", err)
+	}
+
+	// If we couldn't find the file in the diff, create a regular comment instead
+	if !fileFound {
+		logger.Warn("Could not find file in PR diff, creating regular comment instead", "path", path)
+		err := CreatePRComment(ctx, client, owner, repo, prNumber, truncatedBody)
+		if err != nil {
+			return nil, err
+		}
+		// Return an empty review since we created a regular comment
+		return &githublib.PullRequestReview{}, nil
+	}
+
 	// Create a draft review with the comment
 	var review *githublib.PullRequestReview
 	err = RetryableOperation(ctx, func() error {
-		// Create a draft review comment
+		// Create a draft review comment that uses line numbers instead of position
+		// This is more reliable for GitHub API
 		draftComment := &githublib.DraftReviewComment{
-			Path:     githublib.String(path),
-			Position: githublib.Int(position),
-			Body:     githublib.String(truncatedBody),
+			Path: githublib.String(path),
+			Body: githublib.String(truncatedBody),
+		}
+
+		// Prefer line property over position if available
+		if position > 0 {
+			draftComment.Line = githublib.Int(position)
+		} else {
+			// Fallback to position if needed
+			draftComment.Position = githublib.Int(1) // Default to first line if position is invalid
 		}
 
 		// Create the review request with the comment

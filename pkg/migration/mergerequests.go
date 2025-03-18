@@ -329,17 +329,17 @@ func processMergeRequest(ctx context.Context, gitlabClient *gitlablib.Client, gi
 	description := utils.TruncateText(mr.Description, utils.MaxPRDescriptionLength-300)
 
 	// 説明文にメタデータを含めたヘッダーを追加
-	body := fmt.Sprintf("## Migrated from GitLab\n\n"+
+	body := fmt.Sprintf("%s\n\n<details><summary>Migrated from GitLab</summary>\n\n"+
 		"**Original MR:** %s/%s/merge_requests/%d\n"+
 		"**Author:** @%s\n"+
 		"**Created:** %s\n"+
 		"**Status:** %s\n\n"+
-		"---\n\n%s%s",
+		"---\n\n%s%s</details>",
+		description,
 		cfg.GitLabURL, cfg.GitLabProjectID, mr.IID,
 		mr.Author.Username,
 		createdAt,
 		mr.State,
-		description,
 		approvalsText)
 
 	body = utils.TruncateText(body, utils.MaxPRDescriptionLength)
@@ -581,18 +581,6 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 		commentDate = note.CreatedAt.Format("2006-01-02 15:04:05 MST")
 	}
 
-	// コメント更新日時の取得（もし更新されていれば）
-	updatedInfo := ""
-	if !note.UpdatedAt.IsZero() && note.UpdatedAt.After(note.CreatedAt.Add(time.Minute)) { // 1分以上差があれば更新とみなす
-		updatedInfo = fmt.Sprintf(" (edited: %s)", note.UpdatedAt.Format("2006-01-02 15:04:05 MST"))
-	}
-
-	// ディスカッション情報を追加（必要に応じて）
-	discussionInfo := ""
-	if discussionID != "" {
-		discussionInfo = fmt.Sprintf("\n\n*From GitLab Discussion: %s*", discussionID)
-	}
-
 	// リプライ情報を追加（必要に応じて）
 	replyInfo := ""
 	if replyToID != 0 {
@@ -608,13 +596,12 @@ func createGitHubComment(ctx context.Context, githubClient *github.Client, cfg c
 		authorName = fmt.Sprintf("%s (%s)", note.Author.Name, note.Author.Username)
 	}
 
-	commentBody := fmt.Sprintf("*Comment by %s on GitLab:*\n\n**Posted at:** %s%s%s%s\n\n%s",
+	commentBody := fmt.Sprintf("%s\n%s\n|Comment by|Posted at|\n|-|-|\n|%s|%s|\n",
+		wrappedText,
+		replyInfo,
 		authorName,
 		commentDate,
-		updatedInfo,
-		discussionInfo,
-		replyInfo,
-		wrappedText)
+	)
 
 	// Handle based on whether it's a reply, a review comment, or a regular comment
 	if replyToID != 0 {
