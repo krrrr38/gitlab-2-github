@@ -3,9 +3,7 @@ package migration
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	"github.com/google/go-github/v60/github"
+	"github.com/google/go-github/v70/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/config"
 	"github.com/krrrr38/gitlab-2-github/pkg/git"
 	githubClient "github.com/krrrr38/gitlab-2-github/pkg/github"
@@ -13,7 +11,7 @@ import (
 )
 
 // checkGitHubRepositoryExists checks if the GitHub repository exists
-func checkGitHubRepositoryExists(ctx context.Context, cfg config.Config) (bool, error) {
+func checkGitHubRepositoryExists(ctx context.Context, cfg config.GlobalConfig) (bool, error) {
 	// GitHubクライアントを初期化
 	client := githubClient.NewClient(cfg.GitHubToken)
 
@@ -41,7 +39,7 @@ func checkGitHubRepositoryExists(ctx context.Context, cfg config.Config) (bool, 
 }
 
 // createGitHubRepository creates a new GitHub repository
-func createGitHubRepository(ctx context.Context, cfg config.Config) error {
+func createGitHubRepository(ctx context.Context, cfg config.GlobalConfig) error {
 	// GitHubクライアントを初期化
 	client := githubClient.NewClient(cfg.GitHubToken)
 
@@ -49,7 +47,7 @@ func createGitHubRepository(ctx context.Context, cfg config.Config) error {
 	repo := &github.Repository{
 		Name:        github.String(cfg.GitHubRepo),
 		Private:     github.Bool(true), // デフォルトではプライベートリポジトリとして作成
-		Description: github.String(fmt.Sprintf("Migrated from GitLab: %s", cfg.GitLabProjectID)),
+		Description: github.String(fmt.Sprintf("Migrated from GitLab: %s", cfg.GitLabProject)),
 	}
 
 	// 組織かユーザーかによって呼び出すAPIが異なる
@@ -77,7 +75,7 @@ func createGitHubRepository(ctx context.Context, cfg config.Config) error {
 }
 
 // MirrorRepository mirrors a GitLab repository to GitHub
-func MirrorRepository(cfg config.Config) error {
+func MirrorRepository(g *git.Git, cfg config.GlobalConfig) error {
 	ctx := context.Background()
 
 	// GitHubリポジトリの存在確認
@@ -94,41 +92,8 @@ func MirrorRepository(cfg config.Config) error {
 		}
 	}
 
-	// Create temp directory if it doesn't exist
-	if err := git.CreateDirectory(cfg.TempDir); err != nil {
+	if err = g.Init(cfg.GitHubToken, cfg.GitLabToken); err != nil {
 		return err
-	}
-
-	// Clone GitLab repository with mirror option
-	repoDir := fmt.Sprintf("%s/repo", cfg.TempDir)
-	if err := git.CleanupDirectory(repoDir); err != nil {
-		return fmt.Errorf("failed to clean up temp directory: %w", err)
-	}
-
-	// Build GitLab repository URL with token
-	gitlabURL := fmt.Sprintf("https://oauth2:%s@%s/%s.git",
-		cfg.GitLabToken,
-		strings.TrimPrefix(cfg.GitLabURL, "https://"),
-		cfg.GitLabProjectID)
-
-	// Build GitHub repository URL with token
-	githubURL := fmt.Sprintf("https://%s@github.com/%s/%s.git",
-		cfg.GitHubToken,
-		cfg.GitHubOwner,
-		cfg.GitHubRepo)
-
-	// Clone mirror from GitLab
-	logger.Info("Cloning repository from GitLab...")
-	cloneCmd := fmt.Sprintf("git clone --mirror %s %s", gitlabURL, repoDir)
-	if err := git.ExecuteCommand(cloneCmd); err != nil {
-		return fmt.Errorf("failed to clone GitLab repository: %w", err)
-	}
-
-	// Push mirror to GitHub
-	logger.Info("Pushing repository to GitHub...")
-	pushCmd := fmt.Sprintf("cd %s && git push --mirror %s", repoDir, githubURL)
-	if err := git.ExecuteCommand(pushCmd); err != nil {
-		return fmt.Errorf("failed to push to GitHub: %w", err)
 	}
 
 	return nil

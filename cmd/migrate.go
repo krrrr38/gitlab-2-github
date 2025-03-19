@@ -3,34 +3,31 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
 	"github.com/krrrr38/gitlab-2-github/pkg/config"
+	"github.com/krrrr38/gitlab-2-github/pkg/git"
 	"github.com/krrrr38/gitlab-2-github/pkg/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 	"github.com/krrrr38/gitlab-2-github/pkg/migration"
 	"github.com/spf13/cobra"
 	"github.com/xanzy/go-gitlab"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
-func NewMigrateCommand(cfg *config.Config) *cobra.Command {
+func NewMigrateCommand(cfg *config.GlobalConfig) *cobra.Command {
+	var migrateConfig config.MigrateConfig
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Migrate a GitLab project to GitHub",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMigration(*cfg)
+			return runMigration(*cfg, migrateConfig)
 		},
 	}
 
 	// Migrate command specific flags
-	cmd.Flags().BoolVar(&cfg.IncludePRs, "include-prs", true, "Migrate merge requests to pull requests")
-	cmd.Flags().IntSliceVar(&cfg.FilterMergeReqIDs, "mr-ids", nil, "Filter specific merge request IDs to migrate")
-	cmd.Flags().IntVar(&cfg.ContinueFromMRID, "continue-from", 0, "Continue migration from the specified MR ID")
-	cmd.Flags().BoolVar(&cfg.ForceRecreate, "force-recreate", false, "Force delete and recreate the GitHub repository before migration")
-	cmd.Flags().BoolVar(&cfg.UseCherryPick, "use-cherry-pick", true, "Use cherry-pick with merge commit detection to preserve original commit history when possible")
+	cmd.Flags().IntSliceVar(&migrateConfig.FilterMergeReqIDs, "mr-ids", nil, "Filter specific merge request IDs to migrate")
+	cmd.Flags().IntVar(&migrateConfig.ContinueFromMRID, "continue-from", 0, "Continue migration from the specified MR ID")
 
 	return cmd
 }
@@ -66,7 +63,7 @@ func checkGitHubRepoExists(ctx context.Context, githubClient *github.Client, own
 	return hasCommits, nil
 }
 
-func runMigration(cfg config.Config) error {
+func runMigration(cfg config.GlobalConfig, migrateConfig config.MigrateConfig) error {
 	// Initialize GitLab client
 	gitlabClient, err := gitlab.NewClient(cfg.GitLabToken, gitlab.WithBaseURL(cfg.GitLabURL))
 	if err != nil {
@@ -94,57 +91,35 @@ func runMigration(cfg config.Config) error {
 
 	githubClient := github.NewClient(cfg.GitHubToken)
 
-	// Check if force recreation is requested
-	if cfg.ForceRecreate {
-		logger.Info("Force recreation requested, deleting GitHub repository if it exists...")
+	// リポジトリ設定を取得してミラーリングが必要かどうかを判断
+	// GitHubリポジトリが存在し、少なくとも1つのコミットがあれば既にミラーリング済みと見なす
+	repoExists, err := checkGitHubRepoExists(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
+	if err != nil {
+		logger.Warn("Failed to check GitHub repository status", "error", err)
+	}
 
-		// Try to delete the repository
-		err := github.DeleteRepository(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
-		if err != nil {
-			// Non-existing repository will return an error, but we can ignore it as we'll create it anyway
-			logger.Info("Failed to delete repository, it might not exist yet", "error", err)
-		}
-
-		// Add a small delay to ensure the deletion is processed
-		time.Sleep(2 * time.Second)
-
-		// リポジトリをミラーリング（削除後なので存在しないはず）
-		logger.Info("Mirroring repository to newly created target...")
-		if err := migration.MirrorRepository(cfg); err != nil {
+	g := git.NewGit(cfg.WorkingDir, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GitLabURL, cfg.GitLabProject)
+	if !repoExists {
+		// 1. リポジトリをミラーリング
+		logger.Info("Mirroring repository...")
+		if err := migration.MirrorRepository(g, cfg); err != nil {
 			return fmt.Errorf("failed to mirror repository: %w", err)
 		}
 	} else {
-		// リポジトリ設定を取得してミラーリングが必要かどうかを判断
-		// GitHubリポジトリが存在し、少なくとも1つのコミットがあれば既にミラーリング済みと見なす
-		repoExists, err := checkGitHubRepoExists(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
-		if err != nil {
-			logger.Warn("Failed to check GitHub repository status", "error", err)
-		}
-
-		if !repoExists {
-			// 1. リポジトリをミラーリング
-			logger.Info("Mirroring repository...")
-			if err := migration.MirrorRepository(cfg); err != nil {
-				return fmt.Errorf("failed to mirror repository: %w", err)
-			}
-		} else {
-			logger.Info("Repository already exists on GitHub, skipping mirroring...")
-		}
+		logger.Info("Repository already exists on GitHub, skipping mirroring...")
 	}
 
 	// 2. マージリクエストの移行（リクエストされている場合）
-	if cfg.IncludePRs {
-		logger.Info("Migrating merge requests...")
+	logger.Info("Migrating merge requests...")
 
-		// マイグレーションオプションを設定
-		migrationOpts := &migration.MigrationOptions{
-			ContinueFromID: cfg.ContinueFromMRID,
-			DryRun:         false,
-		}
+	// マイグレーションオプションを設定
+	migrationOpts := &migration.MigrationOptions{
+		ContinueFromID:    migrateConfig.ContinueFromMRID,
+		FilterMergeReqIDs: migrateConfig.FilterMergeReqIDs,
+	}
 
-		if err := migration.MigrateMergeRequests(ctx, gitlabClient, githubClient, cfg, migrationOpts); err != nil {
-			return fmt.Errorf("failed to migrate merge requests: %w", err)
-		}
+	if err := migration.MigrateMergeRequests(ctx, gitlabClient, githubClient, cfg, migrationOpts); err != nil {
+		return fmt.Errorf("failed to migrate merge requests: %w", err)
 	}
 
 	logger.Info("Migration completed successfully!")

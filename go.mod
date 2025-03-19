@@ -3,7 +3,7 @@ module github.com/krrrr38/gitlab-2-github
 go 1.24.1
 
 require (
-	github.com/google/go-github/v60 v60.0.0
+	github.com/google/go-github/v70 v70.0.0
 	github.com/rs/zerolog v1.33.0
 	github.com/shurcooL/githubv4 v0.0.0-20240727222349-48295856cce7
 	github.com/spf13/cobra v1.8.0

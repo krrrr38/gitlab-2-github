@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/google/go-github/v60/github"
+	"github.com/google/go-github/v70/github"
 	"github.com/krrrr38/gitlab-2-github/pkg/logger"
 	"github.com/shurcooL/githubv4"
 	"golang.org/x/oauth2"
@@ -37,18 +37,18 @@ func NewClient(token string) *Client {
 }
 
 // GetInner returns the underlying GitHub client
-func (c *Client) GetInner() *github.Client {
-	return c.inner
+func (client *Client) GetInner() *github.Client {
+	return client.inner
 }
 
 // GetV4 returns the underlying GitHub GraphQL client
-func (c *Client) GetV4() *githubv4.Client {
-	return c.v4
+func (client *Client) GetV4() *githubv4.Client {
+	return client.v4
 }
 
 // DeleteRepository deletes a GitHub repository
 func DeleteRepository(ctx context.Context, client *Client, owner, repo string) error {
-	logger.Info("Deleting GitHub repository", "owner", owner, "repo", repo)
+	logger.Debug("Deleting GitHub repository", "owner", owner, "repo", repo)
 
 	err := RetryableOperation(ctx, func() error {
 		_, err := client.GetInner().Repositories.Delete(ctx, owner, repo)
@@ -60,13 +60,13 @@ func DeleteRepository(ctx context.Context, client *Client, owner, repo string) e
 		return fmt.Errorf("failed to delete GitHub repository: %w", err)
 	}
 
-	logger.Info("Successfully deleted GitHub repository", "owner", owner, "repo", repo)
+	logger.Debug("Successfully deleted GitHub repository", "owner", owner, "repo", repo)
 	return nil
 }
 
 // CreateRepository creates an empty GitHub repository
 func CreateRepository(ctx context.Context, client *Client, owner, repo string, private bool) error {
-	logger.Info("Creating GitHub repository", "owner", owner, "repo", repo, "private", private)
+	logger.Debug("Creating GitHub repository", "owner", owner, "repo", repo, "private", private)
 
 	newRepo := &github.Repository{
 		Name:      github.String(repo),
@@ -95,7 +95,7 @@ func CreateRepository(ctx context.Context, client *Client, owner, repo string, p
 		return fmt.Errorf("failed to create GitHub repository: %w", err)
 	}
 
-	logger.Info("Successfully created GitHub repository", "owner", owner, "repo", repo)
+	logger.Debug("Successfully created GitHub repository", "owner", owner, "repo", repo)
 	return nil
 }
 

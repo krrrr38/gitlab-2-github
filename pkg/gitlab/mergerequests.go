@@ -39,7 +39,7 @@ func GetMergeRequests(client *gitlab.Client, projectID string, filterIDs []int) 
 		opts.Page = resp.NextPage
 	}
 
-	logger.Info("Found merge requests to migrate", "count", len(allMRs))
+	logger.Debug("Found merge requests to migrate", "count", len(allMRs))
 
 	// Filter merge requests if specific IDs were provided
 	if len(filterIDs) > 0 {
@@ -53,7 +53,7 @@ func GetMergeRequests(client *gitlab.Client, projectID string, filterIDs []int) 
 			}
 		}
 		allMRs = filteredMRs
-		logger.Info("Filtered merge requests", "count", len(allMRs))
+		logger.Debug("Filtered merge requests", "count", len(allMRs))
 	}
 
 	return allMRs, nil
@@ -83,7 +83,7 @@ func GetMergeRequestNotes(client *gitlab.Client, projectID string, mrIID int) ([
 		noteOpts.Page = resp.NextPage
 	}
 
-	logger.Info("Found comments to migrate", "count", len(allNotes), "mr_id", mrIID)
+	logger.Debug("Found comments to migrate", "count", len(allNotes), "mr_id", mrIID)
 
 	return allNotes, nil
 }
@@ -131,34 +131,8 @@ func GetMergeRequestApprovals(client *gitlab.Client, projectID string, mrIID int
 		updateApprovalTimesFromEvents(events, &approvalInfos)
 	}
 
-	logger.Info("Found approvals for MR", "count", len(approvalInfos), "mr_id", mrIID)
+	logger.Debug("Found approvals for MR", "count", len(approvalInfos), "mr_id", mrIID)
 	return approvalInfos, nil
-}
-
-// GetMergeRequestCommits retrieves commits from a GitLab merge request
-func GetMergeRequestCommits(client *gitlab.Client, projectID string, mrIID int) ([]*gitlab.Commit, error) {
-	opts := &gitlab.GetMergeRequestCommitsOptions{
-		PerPage: 100,
-	}
-
-	var allCommits []*gitlab.Commit
-	for {
-		commits, resp, err := client.MergeRequests.GetMergeRequestCommits(projectID, mrIID, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list GitLab MR commits: %w", err)
-		}
-
-		allCommits = append(allCommits, commits...)
-
-		if resp.NextPage == 0 {
-			break
-		}
-
-		opts.Page = resp.NextPage
-	}
-
-	logger.Info("Found commits for MR", "count", len(allCommits), "mr_id", mrIID)
-	return allCommits, nil
 }
 
 // GetMergeRequestEvents retrieves events for a GitLab merge request

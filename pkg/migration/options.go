@@ -4,7 +4,6 @@ package migration
 type MigrationOptions struct {
 	// 特定のMR IDから再開する場合に指定
 	ContinueFromID int
-
-	// ドライラン（実際には変更を行わない）
-	DryRun bool
+	// 特定のMR IDのみを対象とする場合に指定
+	FilterMergeReqIDs []int
 }

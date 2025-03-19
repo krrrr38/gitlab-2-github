@@ -9,7 +9,7 @@ import (
 )
 
 func NewRootCommand() *cobra.Command {
-	var cfg config.Config
+	var cfg config.GlobalConfig
 
 	rootCmd := &cobra.Command{
 		Use:   "gitlab-2-github",
@@ -24,11 +24,11 @@ This tool performs:
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfg.GitLabToken, "gitlab-token", "", "GitLab API token (or set GITLAB_TOKEN env)")
 	rootCmd.PersistentFlags().StringVar(&cfg.GitLabURL, "gitlab-url", "https://gitlab.com", "GitLab URL")
-	rootCmd.PersistentFlags().StringVar(&cfg.GitLabProjectID, "gitlab-project", "", "GitLab project ID or path (namespace/project-name)")
+	rootCmd.PersistentFlags().StringVar(&cfg.GitLabProject, "gitlab-project", "", "GitLab project ID or path (namespace/project-name)")
 	rootCmd.PersistentFlags().StringVar(&cfg.GitHubToken, "github-token", "", "GitHub API token (or set GITHUB_TOKEN env)")
 	rootCmd.PersistentFlags().StringVar(&cfg.GitHubOwner, "github-owner", "", "GitHub owner (username or organization)")
 	rootCmd.PersistentFlags().StringVar(&cfg.GitHubRepo, "github-repo", "", "GitHub repository name")
-	rootCmd.PersistentFlags().StringVar(&cfg.TempDir, "temp-dir", "./tmp", "Temporary directory for git operations")
+	rootCmd.PersistentFlags().StringVar(&cfg.WorkingDir, "temp-dir", "./tmp", "Temporary directory for git operations")
 	rootCmd.PersistentFlags().StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error, fatal)")
 
 	// Use environment variables if flags are not provided

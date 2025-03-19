@@ -35,14 +35,15 @@ func TruncateText(text string, maxLength int) string {
 }
 
 // WrapComment はコメントを適切にラップします
-// 折りたたみが必要な場合は適用します
-func WrapComment(text string, isResolved bool, author string) string {
-	// 折りたたみが必要な場合
-	if isResolved {
-		// GitHubではコメントを折りたたむための専用Markdownフォーマット
-		return fmt.Sprintf("<details>\n<summary>Resolved comment from %s</summary>\n\n%s\n</details>",
-			author, text)
-	}
+func WrapComment(summary, detail string) string {
+	// GitHubではコメントを折りたたむための専用Markdownフォーマット
+	return fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n</details>",
+		summary, detail)
+}
 
-	return text
+// WrapComment はコメントを適切にラップします
+func WrapCommentAsResolved(detail string) string {
+	// GitHubではコメントを折りたたむための専用Markdownフォーマット
+	return fmt.Sprintf("<details><summary>Resolved</summary>\n\n%s\n</details>",
+		TruncateText(detail, MaxCommentLength-35))
 }
