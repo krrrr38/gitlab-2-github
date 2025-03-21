@@ -15,48 +15,19 @@ type ApprovalInfo struct {
 }
 
 // GetMergeRequests retrieves merge requests from GitLab project
-func GetMergeRequests(client *gitlab.Client, projectID string, filterIDs []int) ([]*gitlab.MergeRequest, error) {
+func GetMergeRequests(client *gitlab.Client, projectID string, page int) ([]*gitlab.MergeRequest, error) {
 	// List all merge requests from GitLab
 	opts := &gitlab.ListProjectMergeRequestsOptions{
+		OrderBy: gitlab.String("created_at"),
+		Sort:    gitlab.String("asc"),
 		ListOptions: gitlab.ListOptions{
 			PerPage: 100,
+			Page:    page,
 		},
 	}
 
-	var allMRs []*gitlab.MergeRequest
-	for {
-		mrs, resp, err := client.MergeRequests.ListProjectMergeRequests(projectID, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list GitLab merge requests: %w", err)
-		}
-
-		allMRs = append(allMRs, mrs...)
-
-		if resp.NextPage == 0 {
-			break
-		}
-
-		opts.Page = resp.NextPage
-	}
-
-	logger.Debug("Found merge requests to migrate", "count", len(allMRs))
-
-	// Filter merge requests if specific IDs were provided
-	if len(filterIDs) > 0 {
-		filteredMRs := make([]*gitlab.MergeRequest, 0)
-		for _, mr := range allMRs {
-			for _, id := range filterIDs {
-				if mr.IID == id {
-					filteredMRs = append(filteredMRs, mr)
-					break
-				}
-			}
-		}
-		allMRs = filteredMRs
-		logger.Debug("Filtered merge requests", "count", len(allMRs))
-	}
-
-	return allMRs, nil
+	mrs, _, err := client.MergeRequests.ListProjectMergeRequests(projectID, opts)
+	return mrs, err
 }
 
 // GetMergeRequestNotes retrieves comments from a GitLab merge request

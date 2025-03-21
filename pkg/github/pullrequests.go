@@ -241,8 +241,7 @@ func (client *Client) CreateCommitComment(ctx context.Context, owner, repo, comm
 		return err
 	})
 	if err != nil {
-		logger.Error("Failed to create comment reply", "error", err)
-		return err
+		return fmt.Errorf("failed to create commit comment %w", err)
 	}
 	return nil
 }

@@ -20,13 +20,11 @@ import (
 // MigrateMergeRequests migrates GitLab merge requests to GitHub pull requests
 func MigrateMergeRequests(ctx context.Context, gitlabClient *gitlablib.Client, githubClient *github.Client, cfg config.GlobalConfig, opts *MigrationOptions) error {
 	g := git.NewGit(cfg.WorkingDir, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GitLabURL, cfg.GitLabProject)
-
-	// Get all merge requests or filter by IDs
-	allMRs, err := gitlab.GetMergeRequests(gitlabClient, cfg.GitLabProject, opts.FilterMergeReqIDs)
-	if err != nil {
-		return fmt.Errorf("failed to get merge requests: %w", err)
-	}
+	// 移行済みのものは、closedとなっているかつ、PRのタイトルに "GL#<mr.IID> " が含まれているものとする
 	allClosedPRTitles, err := githubClient.GetClosedPullRequestTitles(ctx, cfg.GitHubOwner, cfg.GitHubRepo)
+	if err != nil {
+		return err
+	}
 	migratedMRIIDs := make(map[int]struct{})
 	for _, title := range allClosedPRTitles {
 		// "GL#<mr.IID> " で始まっているものがあれば、migratedMRIIDsに追加
@@ -37,76 +35,86 @@ func MigrateMergeRequests(ctx context.Context, gitlabClient *gitlablib.Client, g
 		}
 	}
 
-	logger.Debug("Found merge requests", "count", len(allMRs))
-
-	// 処理順序を決定（IIDで昇順ソート）
-	sort.Slice(allMRs, func(i, j int) bool {
-		return allMRs[i].IID < allMRs[j].IID
-	})
-
+	page := 1
 	var totalProcessed, totalSucceeded, totalFailed int
-
-	targetMRs := make([]*gitlablib.MergeRequest, 0)
-	for _, mr := range allMRs {
-		if opts.ContinueFromID > 0 && mr.IID < opts.ContinueFromID {
-			logger.Debug("Skipping MR (before continue-from point)", "id", mr.IID, "title", mr.Title)
-			continue
-		}
-
-		// 既に GitHub 側でプルリクエストが存在するかを確認して、あればスキップする
-		_, alreadyMigrated := migratedMRIIDs[mr.IID]
-		if alreadyMigrated {
-			logger.Debug("Skipping already migrated MR", "id", mr.IID, "title", mr.Title)
-			continue
-		}
-
-		targetMRs = append(targetMRs, mr)
-	}
-
-	// For each merge request, create corresponding branches and PR in GitHub
-	for _, mr := range targetMRs {
-		// コンテキストが既にキャンセルされていないか確認
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// 処理を継続
-		}
-
-		logger.Info("Migrating MR", "id", mr.IID, "title", mr.Title)
-
-		// Get detailed MR information
-		detailedMR, _, err := gitlabClient.MergeRequests.GetMergeRequest(cfg.GitLabProject, mr.IID, nil)
+	for {
+		// Get all merge requests or filter by IDs
+		mrs, err := gitlab.GetMergeRequests(gitlabClient, cfg.GitLabProject, page)
 		if err != nil {
-			logger.Warn("Failed to get detailed info for MR", "id", mr.IID, "error", err)
-			totalProcessed++
-			totalFailed++
-			continue
+			return fmt.Errorf("failed to get merge requests: %w", err)
+		}
+		if len(mrs) == 0 {
+			break
 		}
 
-		// Create branches and PR in GitHub
-		err = processMergeRequest(ctx, gitlabClient, githubClient, cfg, detailedMR, g)
-		if err != nil {
-			logger.Warn("Failed to migrate MR", "id", mr.IID, "error", err)
-			totalProcessed++
-			totalFailed++
-		} else {
-			totalProcessed++
-			totalSucceeded++
+		targetMRs := make([]*gitlablib.MergeRequest, 0)
+		for _, mr := range mrs {
+			if opts.ContinueFromID > 0 && mr.IID < opts.ContinueFromID {
+				logger.Debug("Skipping MR (before continue-from point)", "iid", mr.IID, "title", mr.Title)
+				continue
+			}
+			if len(opts.FilterMergeReqIDs) > 0 {
+				for _, id := range opts.FilterMergeReqIDs {
+					if mr.IID == id {
+						targetMRs = append(targetMRs, mr)
+						break
+					}
+				}
+				continue
+			}
+			// 既に GitHub 側でプルリクエストが存在するかを確認して、あればスキップする
+			_, alreadyMigrated := migratedMRIIDs[mr.IID]
+			if alreadyMigrated {
+				logger.Debug("Skipping already migrated MR", "id", mr.IID, "title", mr.Title)
+				continue
+			}
+
+			targetMRs = append(targetMRs, mr)
 		}
 
+		// For each merge request, create corresponding branches and PR in GitHub
+		for _, mr := range targetMRs {
+			// コンテキストが既にキャンセルされていないか確認
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				// 処理を継続
+			}
+
+			logger.Info("Migrating MR", "id", mr.IID, "title", mr.Title)
+
+			// Get detailed MR information
+			detailedMR, _, err := gitlabClient.MergeRequests.GetMergeRequest(cfg.GitLabProject, mr.IID, nil)
+			if err != nil {
+				logger.Warn("Failed to get detailed info for MR", "id", mr.IID, "error", err)
+				return err
+			}
+
+			// Create branches and PR in GitHub
+			err = processMergeRequest(ctx, gitlabClient, githubClient, cfg, detailedMR, g)
+			if err != nil {
+				logger.Warn("Failed to migrate MR", "id", mr.IID, "error", err)
+				return err
+			} else {
+				totalProcessed++
+				totalSucceeded++
+			}
+
+		}
 		// 進捗状況を表示
 		logger.Info("Progress",
 			"processed", totalProcessed,
 			"target", len(targetMRs),
 			"succeeded", totalSucceeded,
-			"failed", totalFailed)
+			"failed", totalFailed,
+			"page", page)
+		page += 1
 	}
 
 	// 最終の統計情報を表示
 	logger.Info("Migration completed",
 		"processed", totalProcessed,
-		"target", len(targetMRs),
 		"succeeded", totalSucceeded,
 		"failed", totalFailed)
 
@@ -184,7 +192,12 @@ func createPullRequest(ctx context.Context, gitlabClient *gitlablib.Client, gith
 	if err := g.CreateBranch(targetBranch, mr.DiffRefs.BaseSha); err != nil {
 		return nil, fmt.Errorf("failed to create target branch: %w", err)
 	}
-	if err := g.CreateBranch(sourceBranch, mr.DiffRefs.HeadSha); err != nil {
+	sourceBranchSha := mr.DiffRefs.HeadSha
+	if mr.SquashCommitSHA != "" {
+		// squash mergeの場合、mrのhead shaは取得出来ないため、squash commitを利用する (MRのコメントがfileに付与できないのは諦める)
+		sourceBranchSha = mr.SquashCommitSHA
+	}
+	if err := g.CreateBranch(sourceBranch, sourceBranchSha); err != nil {
 		return nil, fmt.Errorf("failed to create target branch: %w", err)
 	}
 	if err := g.PushBranchOrigin(targetBranch); err != nil {
@@ -198,7 +211,7 @@ func createPullRequest(ctx context.Context, gitlabClient *gitlablib.Client, gith
 	// Prepare PR title (移行済みかどうかのmappingのために "GL#<mr.IID> " を付与)
 	var title string
 	if mr.State == "closed" {
-		title = "[Closed] " + title
+		title = fmt.Sprintf("GL#%d [Closed] %s", mr.IID, mr.Title)
 	} else {
 		title = fmt.Sprintf("GL#%d %s", mr.IID, mr.Title)
 	}
@@ -231,17 +244,17 @@ func createPullRequest(ctx context.Context, gitlabClient *gitlablib.Client, gith
 	description := utils.TruncateText(mr.Description, utils.MaxPRDescriptionLength-300)
 
 	// 説明文にメタデータを含めたヘッダーを追加
-	body := fmt.Sprintf("%s\n\n<details><summary>%s Created GitLab Merge Request</summary>\n\n"+
+	body := fmt.Sprintf("<details><summary>%s Created GitLab Merge Request</summary>\n\n"+
 		"**Original MR:** %s/%s/merge_requests/%d\n"+
 		"**Created:** %s\n"+
 		"**Status:** %s\n"+
-		"**Approvals:** \n%s\n</details>",
-		description,
+		"**Approvals:** \n%s\n</details>\n\n%s",
 		mr.Author.Username,
 		cfg.GitLabURL, cfg.GitLabProject, mr.IID,
 		createdAt,
 		mr.State,
-		approvalsText)
+		approvalsText,
+		description)
 
 	body = utils.TruncateText(body, utils.MaxPRDescriptionLength)
 
@@ -311,14 +324,17 @@ func createGitHubDiscussion(ctx context.Context, githubClient *github.Client, cf
 			body := fmt.Sprintf("Related PR: [%s](%s)", pr.GetTitle(), pr.GetHTMLURL())
 			err := githubClient.CreateCommitComment(ctx, cfg.GitHubOwner, cfg.GitHubRepo, commitHash, body)
 			if err != nil {
-				// エラーが出てもスルー
-				logger.Warn(fmt.Sprintf("Failed to create commit comment: %v", headNote), "error", err)
+				// エラーが出た場合は、Issue Commentとする
+				_, err := githubClient.CreateIssueComment(ctx, cfg.GitHubOwner, cfg.GitHubRepo, pr.GetNumber(), body, headNote.Resolved)
+				if err != nil {
+					return err
+				}
 				return nil
 			}
 		}
 
 		// ignore unused system comment
-		if strings.Contains(headNote.Body, "addded ") || strings.Contains(headNote.Body, "approved this merge request") || strings.Contains(headNote.Body, "requested review") || strings.Contains(headNote.Body, "resolved all threads") || strings.Contains(headNote.Body, "mentioned in commit ") {
+		if strings.Contains(headNote.Body, "canceled the automatic merge") || strings.Contains(headNote.Body, "changed the description") || strings.Contains(headNote.Body, "enabled an automatic merge") || strings.Contains(headNote.Body, "added ") || strings.Contains(headNote.Body, "changed title from") || strings.Contains(headNote.Body, "marked the checklist item") || strings.Contains(headNote.Body, "approved this merge request") || strings.Contains(headNote.Body, "requested review") || strings.Contains(headNote.Body, "resolved all threads") || strings.Contains(headNote.Body, "mentioned in commit ") {
 			return nil
 		}
 

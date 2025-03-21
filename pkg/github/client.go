@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -115,20 +114,11 @@ func RetryableOperation(ctx context.Context, operation func() error) error {
 
 		// Check if error is related to rate limit
 		if isRateLimitError(err) {
-			delay := calculateBackoff(attempt, initialDelay, backoffFactor, maxDelay)
-			log.Printf("Rate limit hit. Retrying after %s (attempt %d/%d)", delay, attempt+1, maxRetries)
-
-			// Use context-aware sleep
-			select {
-			case <-time.After(delay):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			return fmt.Errorf("rate limited: %w", err)
 		} else if isRetryableError(err) {
 			// Other retryable errors (network issues, 500s, etc.)
 			delay := calculateBackoff(attempt, initialDelay, backoffFactor, maxDelay)
-			log.Printf("Retryable error: %v. Retrying after %s (attempt %d/%d)", err, delay, attempt+1, maxRetries)
+			logger.Info(fmt.Sprintf("Retryable error: %v. Retrying after %s (attempt %d/%d)", err, delay, attempt+1, maxRetries))
 
 			select {
 			case <-time.After(delay):
@@ -153,7 +143,8 @@ func isRateLimitError(err error) bool {
 
 	// Check if err is a GitHub error response
 	if errResp, ok := err.(*github.ErrorResponse); ok {
-		return errResp.Response.StatusCode == http.StatusForbidden && errResp.Message == "API rate limit exceeded"
+		statusCode := errResp.Response.StatusCode
+		return (statusCode == http.StatusForbidden && errResp.Message == "rate limit") || statusCode == http.StatusTooManyRequests
 	}
 
 	return false

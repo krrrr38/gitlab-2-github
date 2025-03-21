@@ -32,37 +32,6 @@ func NewMigrateCommand(cfg *config.GlobalConfig) *cobra.Command {
 	return cmd
 }
 
-// checkGitHubRepoExists checks if a GitHub repository exists and has content
-func checkGitHubRepoExists(ctx context.Context, githubClient *github.Client, owner, repo string) (bool, error) {
-	// リポジトリの情報を取得
-	err := github.RetryableOperation(ctx, func() error {
-		_, _, err := githubClient.GetInner().Repositories.Get(ctx, owner, repo)
-		return err
-	})
-
-	if err != nil {
-		return false, err
-	}
-
-	// リポジトリは存在するが、コミットがあるかを確認
-	var hasCommits bool
-	err = github.RetryableOperation(ctx, func() error {
-		commits, _, err := githubClient.GetInner().Repositories.ListCommits(ctx, owner, repo, nil)
-		if err != nil {
-			return err
-		}
-
-		hasCommits = len(commits) > 0
-		return nil
-	})
-
-	if err != nil {
-		return false, err
-	}
-
-	return hasCommits, nil
-}
-
 func runMigration(cfg config.GlobalConfig, migrateConfig config.MigrateConfig) error {
 	// Initialize GitLab client
 	gitlabClient, err := gitlab.NewClient(cfg.GitLabToken, gitlab.WithBaseURL(cfg.GitLabURL))
@@ -89,24 +58,13 @@ func runMigration(cfg config.GlobalConfig, migrateConfig config.MigrateConfig) e
 		os.Exit(0)
 	}()
 
-	githubClient := github.NewClient(cfg.GitHubToken)
-
 	// リポジトリ設定を取得してミラーリングが必要かどうかを判断
-	// GitHubリポジトリが存在し、少なくとも1つのコミットがあれば既にミラーリング済みと見なす
-	repoExists, err := checkGitHubRepoExists(ctx, githubClient, cfg.GitHubOwner, cfg.GitHubRepo)
-	if err != nil {
-		logger.Warn("Failed to check GitHub repository status", "error", err)
-	}
-
 	g := git.NewGit(cfg.WorkingDir, cfg.GitHubOwner, cfg.GitHubRepo, cfg.GitLabURL, cfg.GitLabProject)
-	if !repoExists {
-		// 1. リポジトリをミラーリング
-		logger.Info("Mirroring repository...")
-		if err := migration.MirrorRepository(g, cfg); err != nil {
-			return fmt.Errorf("failed to mirror repository: %w", err)
-		}
-	} else {
-		logger.Info("Repository already exists on GitHub, skipping mirroring...")
+
+	// 1. リポジトリをミラーリング
+	logger.Info("Mirroring repository...")
+	if err := migration.MirrorRepository(g, cfg); err != nil {
+		return fmt.Errorf("failed to mirror repository: %w", err)
 	}
 
 	// 2. マージリクエストの移行（リクエストされている場合）
@@ -118,6 +76,7 @@ func runMigration(cfg config.GlobalConfig, migrateConfig config.MigrateConfig) e
 		FilterMergeReqIDs: migrateConfig.FilterMergeReqIDs,
 	}
 
+	githubClient := github.NewClient(cfg.GitHubToken)
 	if err := migration.MigrateMergeRequests(ctx, gitlabClient, githubClient, cfg, migrationOpts); err != nil {
 		return fmt.Errorf("failed to migrate merge requests: %w", err)
 	}
