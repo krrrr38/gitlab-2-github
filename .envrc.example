@@ -1,0 +1,11 @@
+# https://github.com/settings/tokens
+# - `repo` permission
+export GITHUB_GIT_TOKEN="ghp_xxx"
+# export GITHUB_API_TOKEN="ghp_xxx"
+export GITHUB_APP_ID="123"
+export GITHUB_APP_INSTALLATION_ID="1234"
+export GITHUB_APP_PRIVATE_KEY="./path/to/private-key.pem"
+
+# https://gitlab.com/-/user_settings/personal_access_tokens
+# - `api`, `read_api` permissions
+export GITLAB_TOKEN="glpat-xxx"
