@@ -1,8 +1,8 @@
 module github.com/krrrr38/gitlab-2-github
 
 go 1.24.1
-
 require (
+	github.com/bradleyfalzon/ghinstallation/v2 v2.14.0
 	github.com/google/go-github/v70 v70.0.0
 	github.com/rs/zerolog v1.33.0
 	github.com/shurcooL/githubv4 v0.0.0-20240727222349-48295856cce7
@@ -12,7 +12,6 @@ require (
 )
 
 require (
-	github.com/bradleyfalzon/ghinstallation/v2 v2.14.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.1 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/go-github/v69 v69.0.0 // indirect
@@ -24,8 +23,8 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/shurcooL/graphql v0.0.0-20230722043721-ed46e5a46466 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	golang.org/x/net v0.8.0 // indirect
-	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/net v0.36.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.29.1 // indirect
